@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:ui' show ImageFilter;
 
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter/material.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../../app/theme/bitwave_theme.dart';
@@ -1202,17 +1204,24 @@ class _LibraryScreenState extends State<LibraryScreen> {
     setState(() => _sleepDeadline = deadline);
   }
 
-  void _openPlayer() => showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    useSafeArea: true,
-    backgroundColor: BitwaveColors.ink,
-    builder: (_) => _NowPlayingSheet(
-      audio: widget.audio,
-      artworkStyle: _artworkStyle,
-      animatedArtworkEnabled: _animatedArtworkEnabled,
-      onOpenDetails: _openTrackDetails,
-      onEditArtwork: (track) => _editArtwork([track]),
+  void _openPlayer() => Navigator.of(context).push<void>(
+    PageRouteBuilder<void>(
+      fullscreenDialog: true,
+      transitionDuration: const Duration(milliseconds: 240),
+      reverseTransitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (_, _, _) => _NowPlayingScreen(
+        audio: widget.audio,
+        artworkStyle: _artworkStyle,
+        animatedArtworkEnabled: _animatedArtworkEnabled,
+        onOpenDetails: _openTrackDetails,
+      ),
+      transitionsBuilder: (_, animation, _, child) => SlideTransition(
+        position: Tween<Offset>(begin: const Offset(0, .04), end: Offset.zero)
+            .animate(
+              CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+            ),
+        child: FadeTransition(opacity: animation, child: child),
+      ),
     ),
   );
 
@@ -1282,19 +1291,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 }
 
-class _NowPlayingSheet extends StatelessWidget {
-  const _NowPlayingSheet({
+class _NowPlayingScreen extends StatelessWidget {
+  const _NowPlayingScreen({
     required this.audio,
     required this.artworkStyle,
     required this.animatedArtworkEnabled,
     required this.onOpenDetails,
-    required this.onEditArtwork,
   });
+
   final BitwaveAudioHandler audio;
   final String artworkStyle;
   final bool animatedArtworkEnabled;
   final ValueChanged<Track> onOpenDetails;
-  final ValueChanged<Track> onEditArtwork;
 
   double _aspectRatio(Track? track) => switch (artworkStyle) {
     'square' => 1,
@@ -1306,240 +1314,218 @@ class _NowPlayingSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) => StreamBuilder<MediaItem?>(
     stream: audio.mediaItem,
-    builder: (context, snap) {
-      final item = snap.data;
+    builder: (context, snapshot) {
+      final item = snapshot.data;
       if (item == null) return const SizedBox.shrink();
       final track = audio.tracks.where((t) => t.id == item.id).firstOrNull;
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(22, 10, 22, 18),
-        child: Column(
+      final ratio = _aspectRatio(track);
+
+      return Scaffold(
+        backgroundColor: const Color(0xFF100D0C),
+        body: Stack(
+          fit: StackFit.expand,
           children: [
-            Container(
-              width: 34,
-              height: 4,
+            if (track != null) _artworkBackdrop(track),
+            const DecoratedBox(
               decoration: BoxDecoration(
-                color: BitwaveColors.muted.withValues(alpha: .45),
-                borderRadius: BorderRadius.circular(3),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Color(0xD0180B06),
+                    Color(0x8829160E),
+                    Color(0xC51B100B),
+                    Color(0xF2100D0C),
+                  ],
+                  stops: [0, .44, .73, 1],
+                ),
               ),
             ),
-            const SizedBox(height: 22),
-            Expanded(
-              child: AspectRatio(
-                aspectRatio: _aspectRatio(track),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: track == null
-                      ? const ColoredBox(
-                          color: BitwaveColors.panel,
-                          child: Center(
-                            child: Icon(
-                              Icons.graphic_eq_rounded,
-                              size: 95,
-                              color: BitwaveColors.accent,
-                            ),
-                          ),
+            SafeArea(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final artHeight = math.min(
+                    constraints.maxWidth / ratio,
+                    constraints.maxHeight * .48,
+                  );
+                  final artWidth = artHeight * ratio;
+                  return Column(
+                    children: [
+                      SizedBox(
+                        height: constraints.maxHeight < 700
+                            ? constraints.maxHeight * .06
+                            : constraints.maxHeight * .10,
+                      ),
+                      Center(
+                        child: SizedBox(
+                          width: artWidth,
+                          height: artHeight,
+                          child: track == null
+                              ? const _ArtworkPlaceholder()
+                              : GestureDetector(
+                                  onDoubleTap: () => audio.player.playing
+                                      ? audio.pause()
+                                      : audio.play(),
+                                  onHorizontalDragEnd: (details) {
+                                    final velocity =
+                                        details.primaryVelocity ?? 0;
+                                    if (velocity < -250) audio.skipToNext();
+                                    if (velocity > 250) audio.skipToPrevious();
+                                  },
+                                  child: _NowPlayingArtwork(
+                                    key: ValueKey(track.id),
+                                    track: track,
+                                    animated:
+                                        animatedArtworkEnabled &&
+                                        !MediaQuery.disableAnimationsOf(
+                                          context,
+                                        ),
+                                  ),
+                                ),
+                        ),
+                      ),
+                      SizedBox(height: constraints.maxHeight * .09),
+                      if (track?.lyrics?.trim().isNotEmpty == true)
+                        _PlayerLyricLabel(
+                          lyrics: track!.lyrics!,
+                          positionStream: audio.player.positionStream,
                         )
-                      : _NowPlayingArtwork(
-                          key: ValueKey(track.id),
-                          track: track,
-                          animated:
-                              animatedArtworkEnabled &&
-                              !MediaQuery.disableAnimationsOf(context),
-                        ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 25),
-            Row(
-              children: [
-                Expanded(
-                  child: InkWell(
-                    onTap: track == null ? null : () => onOpenDetails(track),
-                    borderRadius: BorderRadius.circular(5),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 3),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            item.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 25,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: -.5,
+                      else
+                        const SizedBox(height: 24),
+                      const SizedBox(height: 8),
+                      const Spacer(),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(32, 0, 25, 0),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: InkWell(
+                                onTap: track == null
+                                    ? null
+                                    : () => onOpenDetails(track),
+                                borderRadius: BorderRadius.circular(4),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 4,
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        item.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 27,
+                                          height: 1.08,
+                                          fontWeight: FontWeight.w700,
+                                          letterSpacing: -.8,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 5),
+                                      Text(
+                                        [
+                                          track?.displayArtist ??
+                                              item.artist ??
+                                              'Unknown artist',
+                                          if ((track?.displayAlbum ?? '')
+                                              .isNotEmpty)
+                                            track!.displayAlbum,
+                                          if (track?.year != null)
+                                            '${track!.year}',
+                                        ].join('  ·  '),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 16),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '${item.artist ?? 'Unknown artist'}  ·  ${item.album ?? 'Unknown album'}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: BitwaveColors.muted),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                PopupMenuButton<String>(
-                  enabled: track != null,
-                  icon: const Icon(
-                    Icons.more_horiz_rounded,
-                    color: BitwaveColors.muted,
-                  ),
-                  onSelected: (value) {
-                    if (track == null) return;
-                    if (value == 'tags') onOpenDetails(track);
-                    if (value == 'artwork') onEditArtwork(track);
-                  },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'tags',
-                      child: Text('View / edit tags'),
-                    ),
-                    PopupMenuItem(
-                      value: 'artwork',
-                      child: Text('Edit artwork'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            const SizedBox(height: 13),
-            StreamBuilder<Duration>(
-              stream: audio.player.positionStream,
-              builder: (_, p) {
-                final duration = item.duration ?? Duration.zero;
-                final position = p.data ?? Duration.zero;
-                return Column(
-                  children: [
-                    Slider(
-                      value: duration.inMilliseconds == 0
-                          ? 0
-                          : position.inMilliseconds
-                                .clamp(0, duration.inMilliseconds)
-                                .toDouble(),
-                      max: duration.inMilliseconds == 0
-                          ? 1
-                          : duration.inMilliseconds.toDouble(),
-                      onChanged: (v) =>
-                          audio.seek(Duration(milliseconds: v.round())),
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          _format(position),
-                          style: const TextStyle(
-                            color: BitwaveColors.muted,
-                            fontSize: 11,
-                          ),
+                          ],
                         ),
-                        Text(
-                          _format(duration),
-                          style: const TextStyle(
-                            color: BitwaveColors.muted,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                StreamBuilder<bool>(
-                  stream: audio.player.shuffleModeEnabledStream,
-                  initialData: audio.player.shuffleModeEnabled,
-                  builder: (_, s) => IconButton(
-                    onPressed: audio.toggleShuffle,
-                    color: s.data == true
-                        ? BitwaveColors.accent
-                        : BitwaveColors.muted,
-                    icon: const Icon(Icons.shuffle_rounded),
-                  ),
-                ),
-                IconButton(
-                  onPressed: audio.skipToPrevious,
-                  iconSize: 36,
-                  icon: const Icon(Icons.skip_previous_rounded),
-                ),
-                StreamBuilder<bool>(
-                  stream: audio.player.playingStream,
-                  initialData: audio.player.playing,
-                  builder: (_, p) => FilledButton(
-                    onPressed: p.data == true ? audio.pause : audio.play,
-                    style: FilledButton.styleFrom(
-                      shape: const CircleBorder(),
-                      padding: const EdgeInsets.all(18),
-                      backgroundColor: BitwaveColors.paper,
-                      foregroundColor: BitwaveColors.ink,
-                    ),
-                    child: Icon(
-                      p.data == true
-                          ? Icons.pause_rounded
-                          : Icons.play_arrow_rounded,
-                      size: 31,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  onPressed: audio.skipToNext,
-                  iconSize: 36,
-                  icon: const Icon(Icons.skip_next_rounded),
-                ),
-                StreamBuilder<LoopMode>(
-                  stream: audio.player.loopModeStream,
-                  initialData: audio.player.loopMode,
-                  builder: (_, s) => IconButton(
-                    onPressed: audio.cycleRepeat,
-                    color: s.data == LoopMode.off
-                        ? BitwaveColors.muted
-                        : BitwaveColors.accent,
-                    icon: Icon(
-                      s.data == LoopMode.one
-                          ? Icons.repeat_one_rounded
-                          : Icons.repeat_rounded,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.headphones_rounded,
-                      size: 18,
-                      color: BitwaveColors.muted,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      track?.format ?? 'Local file',
-                      style: const TextStyle(
-                        color: BitwaveColors.muted,
-                        fontSize: 12,
                       ),
-                    ),
-                  ],
-                ),
-                TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                  },
-                  icon: const Icon(Icons.queue_music_rounded),
-                  label: const Text('Queue'),
-                ),
-              ],
+                      const SizedBox(height: 8),
+                      StreamBuilder<Duration>(
+                        stream: audio.player.positionStream,
+                        builder: (context, positionSnapshot) {
+                          final duration = item.duration ?? Duration.zero;
+                          final position =
+                              positionSnapshot.data ?? Duration.zero;
+                          final max = duration.inMilliseconds.toDouble();
+                          final value = max <= 0
+                              ? 0.0
+                              : position.inMilliseconds
+                                    .clamp(0, duration.inMilliseconds)
+                                    .toDouble();
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 27),
+                            child: Column(
+                              children: [
+                                SliderTheme(
+                                  data: SliderTheme.of(context).copyWith(
+                                    trackHeight: 2.5,
+                                    thumbShape: const RoundSliderThumbShape(
+                                      enabledThumbRadius: 3.2,
+                                    ),
+                                    overlayShape: const RoundSliderOverlayShape(
+                                      overlayRadius: 14,
+                                    ),
+                                  ),
+                                  child: Slider(
+                                    value: value,
+                                    max: max <= 0 ? 1 : max,
+                                    onChanged: max <= 0
+                                        ? null
+                                        : (next) => audio.seek(
+                                            Duration(
+                                              milliseconds: next.round(),
+                                            ),
+                                          ),
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 5,
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        _format(position),
+                                        style: const TextStyle(
+                                          color: Color(0xFFC4BFBD),
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      Text(
+                                        _format(duration),
+                                        style: const TextStyle(
+                                          color: Color(0xFFC4BFBD),
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      _OutputDeviceLabel(
+                        formatInfo:
+                            '${track?.format ?? 'Audio'}${track?.bitrateKbps == null ? '' : '  ·  ${track!.bitrateKbps} kbps'}',
+                      ),
+                      const SizedBox(height: 4),
+                    ],
+                  );
+                },
+              ),
             ),
           ],
         ),
@@ -1547,8 +1533,232 @@ class _NowPlayingSheet extends StatelessWidget {
     },
   );
 
+  Widget _artworkBackdrop(Track track) {
+    final path = track.customArtworkPath != null
+        ? (track.animatedArtwork
+              ? track.artworkPosterPath ?? track.customArtworkPath
+              : track.customArtworkPath)
+        : track.embeddedArtworkPath;
+    Widget image;
+    if (track.providerArtworkUrl != null && track.customArtworkPath == null) {
+      image = Image.network(
+        track.providerArtworkUrl!,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _ArtworkPlaceholder(),
+      );
+    } else if (path != null) {
+      image = Image.file(
+        File(path),
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _ArtworkPlaceholder(),
+      );
+    } else if (track.artwork != null) {
+      image = Image.memory(track.artwork!, fit: BoxFit.cover);
+    } else {
+      image = const _ArtworkPlaceholder();
+    }
+    return ImageFiltered(
+      imageFilter: ImageFilter.blur(sigmaX: 42, sigmaY: 42),
+      child: Transform.scale(scale: 1.25, child: image),
+    );
+  }
+
   static String _format(Duration d) =>
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+}
+
+class _ArtworkPlaceholder extends StatelessWidget {
+  const _ArtworkPlaceholder();
+
+  @override
+  Widget build(BuildContext context) => const ColoredBox(
+    color: Color(0xFF201713),
+    child: Center(
+      child: Icon(
+        Icons.graphic_eq_rounded,
+        size: 90,
+        color: BitwaveColors.accent,
+      ),
+    ),
+  );
+}
+
+class _PlayerLyricLabel extends StatelessWidget {
+  const _PlayerLyricLabel({required this.lyrics, required this.positionStream});
+
+  final String lyrics;
+  final Stream<Duration> positionStream;
+
+  @override
+  Widget build(BuildContext context) => StreamBuilder<Duration>(
+    stream: positionStream,
+    builder: (context, snapshot) {
+      final position = snapshot.data ?? Duration.zero;
+      final lines = <({Duration? at, String text})>[];
+      for (final raw in lyrics.split(RegExp(r'\r?\n'))) {
+        if (RegExp(
+          r'^\s*\[(?:ar|ti|al|by|offset|re|ve|length|la|tool):',
+          caseSensitive: false,
+        ).hasMatch(raw)) {
+          continue;
+        }
+        final matches = RegExp(r'\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]')
+            .allMatches(raw)
+            .toList(growable: false);
+        final text = raw
+            .replaceAll(RegExp(r'\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]'), '')
+            .trim();
+        if (text.isEmpty) continue;
+        if (matches.isEmpty) {
+          lines.add((at: null, text: text));
+        } else {
+          for (final match in matches) {
+            final minutes = int.tryParse(match.group(1) ?? '') ?? 0;
+            final seconds = int.tryParse(match.group(2) ?? '') ?? 0;
+            final fraction = (match.group(3) ?? '').padRight(3, '0');
+            final millis = int.tryParse(fraction) ?? 0;
+            lines.add((
+              at: Duration(
+                minutes: minutes,
+                seconds: seconds,
+                milliseconds: millis,
+              ),
+              text: text,
+            ));
+          }
+        }
+      }
+      if (lines.isEmpty) return const SizedBox(height: 24);
+      final timed = lines.where((line) => line.at != null).toList();
+      timed.sort((a, b) => a.at!.compareTo(b.at!));
+      final current = timed.isEmpty
+          ? lines.take(2).map((line) => line.text).join('\n')
+          : (timed.lastWhere(
+              (line) => line.at! <= position,
+              orElse: () => timed.first,
+            )).text;
+      return SizedBox(
+        height: 48,
+        child: Center(
+          child: Text(
+            current,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 17,
+              height: 1.2,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -.2,
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _OutputDeviceLabel extends StatefulWidget {
+  const _OutputDeviceLabel({required this.formatInfo});
+
+  final String formatInfo;
+
+  @override
+  State<_OutputDeviceLabel> createState() => _OutputDeviceLabelState();
+}
+
+class _OutputDeviceLabelState extends State<_OutputDeviceLabel> {
+  StreamSubscription<Set<AudioDevice>>? _subscription;
+  String _name = 'Audio output';
+
+  @override
+  void initState() {
+    super.initState();
+    _watchDevices();
+  }
+
+  Future<void> _watchDevices() async {
+    try {
+      final session = await AudioSession.instance;
+      _subscription = session.devicesStream.listen(_update);
+    } catch (_) {
+      // The playback surface remains useful if a platform cannot enumerate routes.
+    }
+  }
+
+  void _update(Set<AudioDevice> devices) {
+    final outputs = devices.where((device) => device.isOutput).toList();
+    outputs.sort(
+      (a, b) => _routePriority(a.name).compareTo(_routePriority(b.name)),
+    );
+    final routeName = outputs.isEmpty || outputs.first.name.trim().isEmpty
+        ? 'Audio output'
+        : outputs.first.name.trim();
+    if (mounted && routeName != _name) setState(() => _name = routeName);
+  }
+
+  int _routePriority(String name) {
+    final normalized = name.toLowerCase();
+    if (normalized.contains('speaker') || normalized.contains('built-in')) {
+      return 1;
+    }
+    if (normalized.contains('headphone') ||
+        normalized.contains('headset') ||
+        normalized.contains('bluetooth') ||
+        normalized.contains('airplay') ||
+        normalized.contains('usb')) {
+      return 0;
+    }
+    return 2;
+  }
+
+  @override
+  void dispose() {
+    _subscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(
+          Icons.headphones_rounded,
+          size: 20,
+          color: Color(0xFFC4BFBD),
+        ),
+        const SizedBox(width: 9),
+        Flexible(
+          child: Text(
+            _name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFFD2CDCA),
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Container(width: 1, height: 14, color: const Color(0xFF514C49)),
+        const SizedBox(width: 10),
+        Flexible(
+          child: Text(
+            widget.formatInfo,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFFC4BFBD),
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _NowPlayingArtwork extends StatefulWidget {
@@ -1578,6 +1788,8 @@ class _NowPlayingArtworkState extends State<_NowPlayingArtwork> {
   void didUpdateWidget(covariant _NowPlayingArtwork oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.track.id != widget.track.id ||
+        oldWidget.track.motionArtworkUrl != widget.track.motionArtworkUrl ||
+        oldWidget.track.customArtworkPath != widget.track.customArtworkPath ||
         oldWidget.animated != widget.animated) {
       _disposeVideo();
       _videoFailed = false;
@@ -1587,18 +1799,19 @@ class _NowPlayingArtworkState extends State<_NowPlayingArtwork> {
 
   Future<void> _startVideoIfNeeded() async {
     final path = widget.track.motionArtworkPath;
-    if (!widget.animated ||
-        path == null ||
-        !const {
-          '.mp4',
-          '.mov',
-        }.contains(path.toLowerCase().substring(path.lastIndexOf('.')))) {
+    final motionUrl = widget.track.motionArtworkUrl;
+    if (!widget.animated || (path == null && motionUrl == null)) {
       return;
     }
-    final controller = VideoPlayerController.file(
-      File(path),
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-    );
+    final controller = motionUrl != null
+        ? VideoPlayerController.networkUrl(
+            Uri.parse(motionUrl),
+            videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+          )
+        : VideoPlayerController.file(
+            File(path!),
+            videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+          );
     _controller = controller;
     try {
       await controller.initialize();

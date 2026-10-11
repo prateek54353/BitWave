@@ -29,6 +29,8 @@ class Track {
     this.animatedArtwork = false,
     this.artworkPosterPath,
     this.favorite = false,
+    this.lyrics,
+    this.motionArtworkUrl,
   });
 
   final String id, path, title, artist, album, format;
@@ -46,8 +48,15 @@ class Track {
   final bool animatedArtwork;
   final String? artworkPosterPath;
   final bool favorite;
+  final String? lyrics;
+  final String? motionArtworkUrl;
 
   Duration get duration => Duration(milliseconds: durationMs);
+  int? get bitrateKbps => bitrate == null
+      ? null
+      : bitrate! >= 10000
+      ? (bitrate! / 1000).round()
+      : bitrate;
   String get displayArtist => artist.isEmpty ? 'Unknown artist' : artist;
   String get displayAlbum => album.isEmpty ? 'Unknown album' : album;
   String? get artworkPath {
@@ -92,6 +101,8 @@ class Track {
     'animated_artwork': animatedArtwork ? 1 : 0,
     'artwork_poster_path': artworkPosterPath,
     'favorite': favorite ? 1 : 0,
+    'lyrics': lyrics,
+    'motion_artwork_url': motionArtworkUrl,
   };
 
   factory Track.fromMap(Map<String, Object?> m) => Track(
@@ -122,5 +133,7 @@ class Track {
     animatedArtwork: (m['animated_artwork'] as int? ?? 0) == 1,
     artworkPosterPath: m['artwork_poster_path'] as String?,
     favorite: (m['favorite'] as int? ?? 0) == 1,
+    lyrics: m['lyrics'] as String?,
+    motionArtworkUrl: m['motion_artwork_url'] as String?,
   );
 }

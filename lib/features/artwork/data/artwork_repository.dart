@@ -171,6 +171,22 @@ class ArtworkRepository {
     await _deleteUnused(oldPaths);
   }
 
+  Future<void> assignMotionArtworkUrl(
+    List<Track> tracks,
+    String url, {
+    double? aspectRatio,
+  }) => database.saveMotionArtworkUrl(
+    tracks.map((track) => track.id).toList(growable: false),
+    url,
+    aspectRatio: aspectRatio,
+  );
+
+  Future<void> clearMotionArtworkUrl(List<Track> tracks) =>
+      database.saveMotionArtworkUrl(
+        tracks.map((track) => track.id).toList(growable: false),
+        null,
+      );
+
   Future<void> reset(List<Track> tracks) async {
     final oldPaths = tracks
         .expand((track) => [track.customArtworkPath, track.artworkPosterPath])

@@ -99,6 +99,7 @@ class LibraryRepository {
           bitrate: meta?.bitrate,
           artwork: embedded,
           embeddedArtworkPath: embeddedPath,
+          lyrics: _nonEmpty(meta?.lyrics),
         );
         await database.upsert(track);
         imported.add(track);

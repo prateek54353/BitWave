@@ -6,6 +6,8 @@ Bitwave is an offline-first local audio library and player built with Flutter.
 
 - Import audio files through the operating system picker. Imported files are copied into app-private storage so the library does not depend on a temporary picker URL.
 - Read common title, artist, album, genre, year, duration, track-number, bitrate, sample-rate, and embedded-cover tags. Malformed tags fall back to the filename while keeping the audio file importable.
+- Read embedded unsynchronized and timestamped LRC lyrics into the library. Timestamped lyrics follow playback in Now Playing; ordinary lyrics show a short excerpt.
+- Search LRCLIB from track details, review exact metadata matches, and save selected lyrics in the local library for offline use. Requests identify Bitwave and honor LRCLIB's `Retry-After` response.
 - Keep track metadata and favorites in a versioned SQLite database.
 - Browse songs, albums, artists, and genres; search the indexed library; switch album presentation between grid and list.
 - Play local files through `just_audio`, with an `audio_service` queue, seek, previous/next, shuffle, repeat, mini-player, full player, and Android/iOS media-session configuration.
@@ -13,6 +15,7 @@ Bitwave is an offline-first local audio library and player built with Flutter.
 - Assign per-track or album-level image and motion artwork as private Bitwave overrides. Crop framing and aspect ratio are persisted without writing to audio tags.
 - Open a track tag viewer/editor from track menus or by tapping the title and artist in Now Playing. Edits are stored in Bitwave's database; audio files are not modified.
 - Search the Apple Music public catalog with a user-supplied developer token, inspect candidate releases, and select a static artwork URL manually. Local covers remain available offline.
+- Search the m8tec community motion-artwork service from Edit Artwork. A match must be reviewed and selected; square or tall HLS artwork streams while online, with the local cover kept as the poster fallback. This service describes its Apple Music retrieval as web scraping and uses non-public Apple endpoints; it is unofficial, subject to change, and has not been cleared by Apple for production use.
 - Play imported MP4/MOV motion artwork silently in the full player, or animated GIF/WebP in the player when the platform decoder supports it. System media surfaces receive a static poster.
 
 ## Build and checks
@@ -29,8 +32,12 @@ Android application ID: `org.bitwave.dev`.
 
 On iOS, file import is user mediated through the document picker. The project enables the audio background mode. Compile, sign, and test it on macOS with Xcode before release. The current playback engine delegates decoding to the platform; verify each desired format on the actual Android and iOS versions being supported.
 
+On Android 13 and later, Bitwave requests notification permission when playback starts. Playback continues if permission is declined, but Android hides the notification from the shade. The media session supplies title, artist, static artwork, and transport controls; animated artwork is in-app only. iOS lock-screen behavior is configured by `audio_service` and must still be checked on a physical iPhone.
+
+Release signing is deliberately separate from debug signing. Set `BITWAVE_STORE_FILE`, `BITWAVE_STORE_PASSWORD`, `BITWAVE_KEY_ALIAS`, and `BITWAVE_KEY_PASSWORD` in the release environment, then build with `flutter build appbundle --release`. Without these values Gradle can produce an unsigned bundle for build validation, but it cannot be uploaded to Google Play. Never commit a keystore or signing secrets.
+
 See [docs/artwork-system.md](docs/artwork-system.md) for artwork storage, Apple Music authorization notes, and platform status.
 
 ## Not yet available
 
-The equalizer is not active because the selected backend does not provide a shared, cross-platform ten-band DSP. Synchronized lyric display, crossfade, ReplayGain, unrestricted media scanning, network sources, embedded-file tag writing, playlist editing, and backup are not implemented. Tag edits currently apply to Bitwave's local library index. No sample tracks or counts are bundled.
+The equalizer is not active because the selected backend does not provide a shared, cross-platform ten-band DSP. Crossfade, ReplayGain, unrestricted media scanning, network sources, embedded-file tag writing, playlist editing, and backup are not implemented. Tag and lyric edits currently apply to Bitwave's local library index. No sample tracks or counts are bundled. Store listing, privacy disclosures, production signing, iOS build/sign/device validation, lyrics-content rights review, and final supported-device playback checks remain release work.

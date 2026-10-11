@@ -11,6 +11,7 @@ import '../../artwork/data/artwork_repository.dart';
 import '../../artwork/domain/artwork_asset.dart';
 import '../../artwork/presentation/artwork_editor_sheet.dart';
 import '../../player/data/bitwave_audio_handler.dart';
+import '../../lyrics/data/lrclib_provider.dart';
 import '../data/library_repository.dart';
 import '../domain/track.dart';
 
@@ -37,11 +38,15 @@ class TrackDetailsPage extends StatefulWidget {
 class _TrackDetailsPageState extends State<TrackDetailsPage> {
   static const _storage = FlutterSecureStorage();
   final _provider = AppleMusicArtworkProvider();
+  final _lyricsProvider = LrclibProvider();
   late Track _track;
   late final Map<String, TextEditingController> _fields;
   List<AppleArtworkMatch> _matches = [];
   bool _saving = false;
   bool _searching = false;
+  bool _searchingLyrics = false;
+  List<LyricsMatch> _lyricsMatches = [];
+  String? _lyricsError;
   String? _providerError;
 
   @override
@@ -64,6 +69,7 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
       controller.dispose();
     }
     _provider.dispose();
+    _lyricsProvider.dispose();
     super.dispose();
   }
 
@@ -189,6 +195,47 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
     }
   }
 
+  Future<void> _searchLyrics() async {
+    setState(() {
+      _searchingLyrics = true;
+      _lyricsMatches = [];
+      _lyricsError = null;
+    });
+    try {
+      final results = await _lyricsProvider.search(
+        title: _fields['Title']!.text.trim(),
+        artist: _fields['Artist']!.text.trim().isEmpty
+            ? _fields['Album artist']!.text.trim()
+            : _fields['Artist']!.text.trim(),
+        album: _fields['Album']!.text.trim(),
+      );
+      if (mounted) {
+        setState(() {
+          _lyricsMatches = results;
+          if (results.isEmpty) _lyricsError = 'No lyrics matches found.';
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _lyricsError = error.toString());
+    } finally {
+      if (mounted) setState(() => _searchingLyrics = false);
+    }
+  }
+
+  Future<void> _chooseLyrics(LyricsMatch match) async {
+    final lyrics = match.preferredLyrics;
+    if (lyrics == null) return;
+    await widget.library.database.updateLyrics(id: _track.id, lyrics: lyrics);
+    await _reload();
+    if (mounted) _message('Lyrics saved for offline playback.');
+  }
+
+  Future<void> _clearLyrics() async {
+    await widget.library.database.updateLyrics(id: _track.id, lyrics: null);
+    await _reload();
+    if (mounted) _message('Saved lyrics removed.');
+  }
+
   String? _source(String? value) =>
       value?.trim().isNotEmpty == true ? value!.trim() : null;
   void _message(String value) =>
@@ -229,6 +276,73 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
             label: const Text('Reset to file tags'),
           ),
         ),
+        const SizedBox(height: 18),
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'LYRICS',
+                style: TextStyle(
+                  color: BitwaveColors.accent,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.6,
+                ),
+              ),
+            ),
+            if ((_track.lyrics ?? '').isNotEmpty)
+              TextButton(onPressed: _clearLyrics, child: const Text('Remove')),
+            TextButton.icon(
+              onPressed: _searchingLyrics ? null : _searchLyrics,
+              icon: _searchingLyrics
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.search, size: 18),
+              label: const Text('LRCLIB'),
+            ),
+          ],
+        ),
+        if ((_track.lyrics ?? '').trim().isNotEmpty)
+          _panel(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(15),
+                child: Text(
+                  _track.lyrics!.trim(),
+                  maxLines: 7,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: BitwaveColors.muted,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          )
+        else
+          _panel(
+            children: const [
+              Padding(
+                padding: EdgeInsets.all(15),
+                child: Text(
+                  'No saved lyrics for this track.',
+                  style: TextStyle(color: BitwaveColors.muted),
+                ),
+              ),
+            ],
+          ),
+        if (_lyricsError != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              _lyricsError!,
+              style: const TextStyle(color: BitwaveColors.muted),
+            ),
+          ),
+        if (_lyricsMatches.isNotEmpty) _lyricsMatchList(),
         const SizedBox(height: 18),
         Row(
           children: [
@@ -290,7 +404,7 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
             _technicalLine('Duration', _format(_track.duration)),
             _technicalLine(
               'Bitrate',
-              _track.bitrate == null ? '—' : '${_track.bitrate} kbps',
+              _track.bitrateKbps == null ? '—' : '${_track.bitrateKbps} kbps',
             ),
             _technicalLine(
               'Sample rate',
@@ -372,7 +486,7 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
                           Text(
                             _track.bitrate == null
                                 ? _format(_track.duration)
-                                : '${_track.bitrate} kbps  ·  ${_track.sampleRate == null ? '—' : '${(_track.sampleRate! / 1000).toStringAsFixed(1)} kHz'}',
+                                : '${_track.bitrateKbps} kbps  ·  ${_track.sampleRate == null ? '—' : '${(_track.sampleRate! / 1000).toStringAsFixed(1)} kHz'}',
                             style: const TextStyle(color: BitwaveColors.paper),
                           ),
                         ],
@@ -632,6 +746,33 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
         ),
       );
     },
+  );
+
+  Widget _lyricsMatchList() => DecoratedBox(
+    decoration: BoxDecoration(
+      color: BitwaveColors.panel,
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Column(
+      children: [
+        for (final match in _lyricsMatches)
+          ListTile(
+            title: Text(
+              match.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              '${match.artist} · ${match.album.isEmpty ? 'Album unknown' : match.album} · '
+              '${match.syncedLyrics?.trim().isNotEmpty == true ? 'Synced' : 'Plain'}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: const Icon(Icons.download_outlined),
+            onTap: () => _chooseLyrics(match),
+          ),
+      ],
+    ),
   );
 
   static String _format(Duration d) =>

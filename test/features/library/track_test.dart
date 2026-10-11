@@ -20,6 +20,8 @@ void main() {
       sampleRate: 96000,
       bitrate: 1200,
       favorite: true,
+      lyrics: '[00:01.20]First line\n[00:02.30]Second line',
+      motionArtworkUrl: 'https://example.invalid/art.m3u8',
     );
 
     final restored = Track.fromMap(original.toMap());
@@ -31,7 +33,10 @@ void main() {
     expect(restored.genre, original.genre);
     expect(restored.duration, original.duration);
     expect(restored.sampleRate, original.sampleRate);
+    expect(restored.bitrateKbps, 1200);
     expect(restored.favorite, isTrue);
+    expect(restored.lyrics, original.lyrics);
+    expect(restored.motionArtworkUrl, original.motionArtworkUrl);
   });
 
   test('missing artist and album have readable display labels', () {
@@ -104,4 +109,20 @@ void main() {
       expect(track.providerArtworkUrl, contains('cover.jpg'));
     },
   );
+
+  test('bitrate values are presented in kilobits per second', () {
+    const track = Track(
+      id: 'bitrate-track',
+      path: '/music/rate.mp3',
+      title: 'Rate',
+      artist: 'Artist',
+      album: 'Album',
+      durationMs: 1000,
+      format: 'MP3',
+      fileSize: 100,
+      modifiedMs: 1,
+      bitrate: 320000,
+    );
+    expect(track.bitrateKbps, 320);
+  });
 }

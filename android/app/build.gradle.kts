@@ -14,6 +14,28 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    val releaseStoreFile = providers.environmentVariable("BITWAVE_STORE_FILE").orNull
+    val releaseStorePassword = providers.environmentVariable("BITWAVE_STORE_PASSWORD").orNull
+    val releaseKeyAlias = providers.environmentVariable("BITWAVE_KEY_ALIAS").orNull
+    val releaseKeyPassword = providers.environmentVariable("BITWAVE_KEY_PASSWORD").orNull
+    val hasReleaseSigning = listOf(
+        releaseStoreFile,
+        releaseStorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword,
+    ).all { !it.isNullOrBlank() }
+
+    signingConfigs {
+        create("bitwaveRelease") {
+            if (hasReleaseSigning) {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "org.bitwave.dev"
@@ -31,9 +53,12 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Never ship an artifact signed with the development debug key.
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("bitwaveRelease")
+            } else {
+                null
+            }
         }
     }
 }

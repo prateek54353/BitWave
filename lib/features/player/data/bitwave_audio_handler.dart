@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:flutter/services.dart';
 
 import '../../library/domain/track.dart';
 
@@ -56,6 +58,16 @@ class BitwaveAudioHandler extends BaseAudioHandler
 
   Future<void> playTracks(List<Track> tracks, {int initialIndex = 0}) async {
     if (tracks.isEmpty) return;
+    if (Platform.isAndroid) {
+      try {
+        await const MethodChannel('org.bitwave.dev/notifications')
+            .invokeMethod<bool>('requestPermission');
+      } on PlatformException {
+        // Audio playback remains available when notification permission is denied.
+      } on MissingPluginException {
+        // Notification permission is managed by the host platform.
+      }
+    }
     _tracks = List.of(tracks);
     final items = _tracks.map(_item).toList(growable: false);
     queue.add(items);

@@ -16,6 +16,7 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'org.bitwave.dev.audio',
       androidNotificationChannelName: 'Bitwave playback',
+      androidNotificationIcon: 'drawable/ic_stat_bitwave',
       androidNotificationOngoing: true,
       androidStopForegroundOnPause: true,
     ),
