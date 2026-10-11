@@ -77,7 +77,12 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
     await widget.onUpdated();
     final all = await widget.library.load();
     final latest = all.where((track) => track.id == _track.id).firstOrNull;
-    if (latest != null && mounted) setState(() => _track = latest);
+    if (latest != null) {
+      // The now-playing screen reads the queued track, not the database copy.
+      // Refresh it after lyrics/artwork edits so changes appear immediately.
+      widget.audio.updateTrackMetadata(latest);
+      if (mounted) setState(() => _track = latest);
+    }
   }
 
   Future<void> _saveTags() async {

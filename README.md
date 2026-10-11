@@ -16,7 +16,7 @@ Bitwave is an offline-first local audio library and player built with Flutter.
 - Open a track tag viewer/editor from track menus or by tapping the title and artist in Now Playing. Edits are stored in Bitwave's database; audio files are not modified.
 - Search the Apple Music public catalog with a user-supplied developer token, inspect candidate releases, and select a static artwork URL manually. Local covers remain available offline.
 - Search the m8tec community motion-artwork service from Edit Artwork. A match must be reviewed and selected; square or tall HLS artwork streams while online, with the local cover kept as the poster fallback. This service describes its Apple Music retrieval as web scraping and uses non-public Apple endpoints; it is unofficial, subject to change, and has not been cleared by Apple for production use.
-- Play imported MP4/MOV motion artwork silently in the full player, or animated GIF/WebP in the player when the platform decoder supports it. System media surfaces receive a static poster.
+- Play imported MP4/MOV motion artwork silently in the full player, or animated GIF/WebP in the player when the platform decoder supports it. iOS 26+ can receive imported square or 3:4 local MP4/MOV artwork through Apple's public animated Now Playing API; other iOS versions and unsupported aspect ratios use the static poster. Remote HLS provider clips remain in-app because the system API requires a local video URL.
 
 ## Build and checks
 
@@ -32,7 +32,7 @@ Android application ID: `org.bitwave.dev`.
 
 On iOS, file import is user mediated through the document picker. The project enables the audio background mode. Compile, sign, and test it on macOS with Xcode before release. The current playback engine delegates decoding to the platform; verify each desired format on the actual Android and iOS versions being supported.
 
-On Android 13 and later, Bitwave requests notification permission when playback starts. Playback continues if permission is declined, but Android hides the notification from the shade. The media session supplies title, artist, static artwork, and transport controls; animated artwork is in-app only. iOS lock-screen behavior is configured by `audio_service` and must still be checked on a physical iPhone.
+On Android 13 and later, Bitwave requests notification permission when playback starts. Playback continues if permission is declined, but Android hides the notification from the shade. The media session supplies title, artist, static artwork, and transport controls. iOS lock-screen metadata uses `audio_service`; imported animated artwork uses a small native MediaPlayer bridge on iOS 26+ and still requires physical-device verification.
 
 Release signing is deliberately separate from debug signing. Set `BITWAVE_STORE_FILE`, `BITWAVE_STORE_PASSWORD`, `BITWAVE_KEY_ALIAS`, and `BITWAVE_KEY_PASSWORD` in the release environment, then build with `flutter build appbundle --release`. Without these values Gradle can produce an unsigned bundle for build validation, but it cannot be uploaded to Google Play. Never commit a keystore or signing secrets.
 

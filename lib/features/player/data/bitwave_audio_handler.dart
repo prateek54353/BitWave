@@ -13,7 +13,9 @@ class BitwaveAudioHandler extends BaseAudioHandler
     _player.playbackEventStream.listen((_) => _publishState());
     _player.currentIndexStream.listen((index) {
       if (index != null && index < _tracks.length) {
-        mediaItem.add(_item(_tracks[index]));
+        final track = _tracks[index];
+        mediaItem.add(_item(track));
+        _publishIosAnimatedArtwork(track);
       }
       _publishState();
     });
@@ -25,6 +27,9 @@ class BitwaveAudioHandler extends BaseAudioHandler
   final AudioPlayer _player = AudioPlayer(
     handleInterruptions: true,
     maxSkipsOnError: 3,
+  );
+  static const MethodChannel _iosArtworkChannel = MethodChannel(
+    'org.bitwave.dev/now_playing_artwork',
   );
   List<Track> _tracks = [];
   AudioPlayer get player => _player;
@@ -44,12 +49,10 @@ class BitwaveAudioHandler extends BaseAudioHandler
     // Motion art is rendered only in Bitwave; expose its generated still frame
     // to Android and iOS system media surfaces.
     final localPath = track.customArtworkPath != null
-        ? (track.animatedArtwork
-              ? track.artworkPosterPath ?? track.customArtworkPath
-              : track.customArtworkPath)
-        : track.providerArtworkUrl == null
-        ? track.embeddedArtworkPath
-        : null;
+        ? track.animatedArtwork
+              ? track.artworkPosterPath ?? track.embeddedArtworkPath
+              : track.customArtworkPath
+        : track.embeddedArtworkPath;
     if (localPath != null) return Uri.file(localPath);
     return track.providerArtworkUrl == null
         ? null
@@ -142,7 +145,35 @@ class BitwaveAudioHandler extends BaseAudioHandler
     if (index < 0) return;
     _tracks[index] = track;
     queue.add(_tracks.map(_item).toList(growable: false));
-    if (_player.currentIndex == index) mediaItem.add(_item(track));
+    if (_player.currentIndex == index) {
+      mediaItem.add(_item(track));
+      _publishIosAnimatedArtwork(track);
+    }
+  }
+
+  void _publishIosAnimatedArtwork(Track track) {
+    if (!Platform.isIOS) return;
+    final videoPath = track.motionArtworkPath;
+    final posterPath = track.artworkPosterPath;
+    final extension = videoPath?.toLowerCase().split('.').last;
+    if (videoPath == null ||
+        posterPath == null ||
+        !const {'mp4', 'mov', 'm4v'}.contains(extension)) {
+      _iosArtworkChannel
+          .invokeMethod<void>('clearAnimatedArtwork')
+          .catchError((Object _) {});
+      return;
+    }
+    _iosArtworkChannel
+        .invokeMethod<void>('setAnimatedArtwork', {
+          'artworkId': '${track.id}:${track.modifiedMs}:$videoPath',
+          'videoPath': videoPath,
+          'posterPath': posterPath,
+          'aspectRatio': track.artworkAspectRatio ?? 1.0,
+        })
+        .catchError((Object _) {
+          // Older iOS releases keep the static poster and normal playback controls.
+        });
   }
 
   Future<void> toggleShuffle() async =>
