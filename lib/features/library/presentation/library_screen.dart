@@ -1291,7 +1291,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 }
 
-class _NowPlayingScreen extends StatelessWidget {
+class _NowPlayingScreen extends StatefulWidget {
   const _NowPlayingScreen({
     required this.audio,
     required this.artworkStyle,
@@ -1304,7 +1304,14 @@ class _NowPlayingScreen extends StatelessWidget {
   final bool animatedArtworkEnabled;
   final ValueChanged<Track> onOpenDetails;
 
-  double _aspectRatio(Track? track) => switch (artworkStyle) {
+  @override
+  State<_NowPlayingScreen> createState() => _NowPlayingScreenState();
+}
+
+class _NowPlayingScreenState extends State<_NowPlayingScreen> {
+  bool _immersiveArtwork = false;
+
+  double _aspectRatio(Track? track) => switch (widget.artworkStyle) {
     'square' => 1,
     'portrait' => .75,
     'original' => track?.artworkAspectRatio?.clamp(.4, 2.5) ?? 1,
@@ -1313,11 +1320,13 @@ class _NowPlayingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => StreamBuilder<MediaItem?>(
-    stream: audio.mediaItem,
+    stream: widget.audio.mediaItem,
     builder: (context, snapshot) {
       final item = snapshot.data;
       if (item == null) return const SizedBox.shrink();
-      final track = audio.tracks.where((t) => t.id == item.id).firstOrNull;
+      final track = widget.audio.tracks
+          .where((t) => t.id == item.id)
+          .firstOrNull;
       final ratio = _aspectRatio(track);
 
       return Scaffold(
@@ -1325,7 +1334,8 @@ class _NowPlayingScreen extends StatelessWidget {
         body: Stack(
           fit: StackFit.expand,
           children: [
-            if (track != null) _artworkBackdrop(track),
+            if (track != null)
+              _artworkBackdrop(track, immersive: _immersiveArtwork),
             const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -1363,24 +1373,35 @@ class _NowPlayingScreen extends StatelessWidget {
                           child: track == null
                               ? const _ArtworkPlaceholder()
                               : GestureDetector(
-                                  onDoubleTap: () => audio.player.playing
-                                      ? audio.pause()
-                                      : audio.play(),
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => widget.audio.player.playing
+                                      ? widget.audio.pause()
+                                      : widget.audio.play(),
+                                  onDoubleTap: () => setState(
+                                    () =>
+                                        _immersiveArtwork = !_immersiveArtwork,
+                                  ),
                                   onHorizontalDragEnd: (details) {
                                     final velocity =
                                         details.primaryVelocity ?? 0;
-                                    if (velocity < -250) audio.skipToNext();
-                                    if (velocity > 250) audio.skipToPrevious();
+                                    if (velocity < -250) {
+                                      widget.audio.skipToNext();
+                                    }
+                                    if (velocity > 250) {
+                                      Navigator.of(context).maybePop();
+                                    }
                                   },
-                                  child: _NowPlayingArtwork(
-                                    key: ValueKey(track.id),
-                                    track: track,
-                                    animated:
-                                        animatedArtworkEnabled &&
-                                        !MediaQuery.disableAnimationsOf(
-                                          context,
+                                  child: _immersiveArtwork
+                                      ? const SizedBox.expand()
+                                      : _NowPlayingArtwork(
+                                          key: ValueKey(track.id),
+                                          track: track,
+                                          animated:
+                                              widget.animatedArtworkEnabled &&
+                                              !MediaQuery.disableAnimationsOf(
+                                                context,
+                                              ),
                                         ),
-                                  ),
                                 ),
                         ),
                       ),
@@ -1388,7 +1409,7 @@ class _NowPlayingScreen extends StatelessWidget {
                       if (track?.lyrics?.trim().isNotEmpty == true)
                         _PlayerLyricLabel(
                           lyrics: track!.lyrics!,
-                          positionStream: audio.player.positionStream,
+                          positionStream: widget.audio.player.positionStream,
                         )
                       else
                         const SizedBox(height: 24),
@@ -1402,7 +1423,7 @@ class _NowPlayingScreen extends StatelessWidget {
                               child: InkWell(
                                 onTap: track == null
                                     ? null
-                                    : () => onOpenDetails(track),
+                                    : () => widget.onOpenDetails(track),
                                 borderRadius: BorderRadius.circular(4),
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(
@@ -1449,7 +1470,7 @@ class _NowPlayingScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 8),
                       StreamBuilder<Duration>(
-                        stream: audio.player.positionStream,
+                        stream: widget.audio.player.positionStream,
                         builder: (context, positionSnapshot) {
                           final duration = item.duration ?? Duration.zero;
                           final position =
@@ -1479,7 +1500,7 @@ class _NowPlayingScreen extends StatelessWidget {
                                     max: max <= 0 ? 1 : max,
                                     onChanged: max <= 0
                                         ? null
-                                        : (next) => audio.seek(
+                                        : (next) => widget.audio.seek(
                                             Duration(
                                               milliseconds: next.round(),
                                             ),
@@ -1533,7 +1554,7 @@ class _NowPlayingScreen extends StatelessWidget {
     },
   );
 
-  Widget _artworkBackdrop(Track track) {
+  Widget _artworkBackdrop(Track track, {required bool immersive}) {
     final path = track.customArtworkPath != null
         ? (track.animatedArtwork
               ? track.artworkPosterPath ?? track.customArtworkPath
@@ -1556,6 +1577,9 @@ class _NowPlayingScreen extends StatelessWidget {
       image = Image.memory(track.artwork!, fit: BoxFit.cover);
     } else {
       image = const _ArtworkPlaceholder();
+    }
+    if (immersive) {
+      return SizedBox.expand(child: image);
     }
     return ImageFiltered(
       imageFilter: ImageFilter.blur(sigmaX: 42, sigmaY: 42),
