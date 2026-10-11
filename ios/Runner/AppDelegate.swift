@@ -81,8 +81,7 @@ private final class BitwaveFolderImportPlugin: NSObject, FlutterPlugin, UIDocume
         try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
         let coordinator = NSFileCoordinator(filePresenter: nil)
         coordinator.coordinate(readingItemAt: folder, options: [], error: &coordinationError) { readableFolder in
-          guard coordinationError == nil,
-                let enumerator = fileManager.enumerator(
+          guard let enumerator = fileManager.enumerator(
                   at: readableFolder,
                   includingPropertiesForKeys: [.isRegularFileKey],
                   options: [.skipsHiddenFiles, .skipsPackageDescendants]
