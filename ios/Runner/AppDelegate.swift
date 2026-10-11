@@ -13,12 +13,12 @@ import MediaPlayer
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    BitwaveNowPlayingArtworkPlugin.register(
-      with: engineBridge.pluginRegistry.registrar(forPlugin: "BitwaveNowPlayingArtworkPlugin")
-    )
-    BitwaveFolderImportPlugin.register(
-      with: engineBridge.pluginRegistry.registrar(forPlugin: "BitwaveFolderImportPlugin")
-    )
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "BitwaveNowPlayingArtworkPlugin") {
+      BitwaveNowPlayingArtworkPlugin.register(with: registrar)
+    }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "BitwaveFolderImportPlugin") {
+      BitwaveFolderImportPlugin.register(with: registrar)
+    }
   }
 }
 
@@ -178,7 +178,7 @@ private final class BitwaveNowPlayingArtworkPlugin: NSObject, FlutterPlugin {
         return
       }
 
-      let supported = center.supportedAnimatedArtworkKeys
+      let supported = MPNowPlayingInfoCenter.supportedAnimatedArtworkKeys
       let key: String
       if abs(ratio - 1.0) <= 0.06 && supported.contains(squareKey) {
         key = squareKey

@@ -4,7 +4,7 @@ Bitwave is an offline-first local audio library and player built with Flutter.
 
 ## Current foundation
 
-- Import audio files through the operating system picker. Imported files are copied into app-private storage so the library does not depend on a temporary picker URL.
+- Import audio files or an entire music folder through the operating system picker. Imported files are copied into app-private storage so the library does not depend on temporary picker URLs. iOS folder import uses a security-scoped document picker and stages supported audio before copying it into Bitwave.
 - Read common title, artist, album, genre, year, duration, track-number, bitrate, sample-rate, and embedded-cover tags. Malformed tags fall back to the filename while keeping the audio file importable.
 - Read embedded unsynchronized and timestamped LRC lyrics into the library. Timestamped lyrics follow playback in Now Playing; ordinary lyrics show a short excerpt.
 - Search LRCLIB from track details, review exact metadata matches, and save selected lyrics in the local library for offline use. Requests identify Bitwave and honor LRCLIB's `Retry-After` response.
@@ -26,11 +26,12 @@ dart format lib test
 flutter analyze
 flutter test
 flutter build apk --debug
+flutter build apk --release
 ```
 
 Android application ID: `org.bitwave.dev`.
 
-On iOS, file import is user mediated through the document picker. The project enables the audio background mode. Compile, sign, and test it on macOS with Xcode before release. The current playback engine delegates decoding to the platform; verify each desired format on the actual Android and iOS versions being supported.
+On iOS, file and folder import are user mediated through the document picker. Folder access is security scoped and supported audio is copied into app-private storage. The project enables the audio background mode. Compile, sign, and test it on macOS with Xcode before release. The current playback engine delegates decoding to the platform; verify each desired format on the actual Android and iOS versions being supported.
 
 On Android 13 and later, Bitwave requests notification permission when playback starts. Playback continues if permission is declined, but Android hides the notification from the shade. The media session supplies title, artist, static artwork, and transport controls. iOS lock-screen metadata uses `audio_service`; imported animated artwork uses a small native MediaPlayer bridge on iOS 26+ and still requires physical-device verification.
 
