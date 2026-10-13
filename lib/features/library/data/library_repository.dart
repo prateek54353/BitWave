@@ -54,6 +54,7 @@ class LibraryRepository {
     final activePaths = <String>{};
     final changedFiles = <(String, String)>[];
 
+    final files = <File>[];
     await for (final entity in folder.list(
       recursive: true,
       followLinks: false,
@@ -64,16 +65,28 @@ class LibraryRepository {
           )) {
         continue;
       }
-      final path = p.normalize(entity.absolute.path);
-      activePaths.add(path);
-      final stat = await entity.stat();
-      final old = knownByPath[path];
-      if (old == null ||
-          path == changedPathKey ||
-          old.fileSize != stat.size ||
-          old.modifiedMs != stat.modified.millisecondsSinceEpoch) {
-        changedFiles.add((path, p.basename(path)));
-      }
+      files.add(entity);
+    }
+
+    // Directory enumeration is cheap; serial stat calls dominate startup for
+    // folders with many songs. Bound concurrent metadata checks to avoid IO spikes.
+    const batchSize = 48;
+    for (var offset = 0; offset < files.length; offset += batchSize) {
+      final batch = files.skip(offset).take(batchSize);
+      await Future.wait(
+        batch.map((entity) async {
+          final path = p.normalize(entity.absolute.path);
+          activePaths.add(path);
+          final stat = await entity.stat();
+          final old = knownByPath[path];
+          if (old == null ||
+              path == changedPathKey ||
+              old.fileSize != stat.size ||
+              old.modifiedMs != stat.modified.millisecondsSinceEpoch) {
+            changedFiles.add((path, p.basename(path)));
+          }
+        }),
+      );
     }
 
     if (changedFiles.isNotEmpty) {
@@ -228,6 +241,7 @@ class LibraryRepository {
           artworkPosterPath: existing?.artworkPosterPath,
           lyrics: existing?.lyrics ?? _nonEmpty(meta?.lyrics),
           motionArtworkUrl: existing?.motionArtworkUrl,
+          spicyTrackId: existing?.spicyTrackId,
         );
         await database.upsert(track);
         imported.add(track);

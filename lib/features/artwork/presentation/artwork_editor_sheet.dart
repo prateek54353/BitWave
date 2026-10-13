@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import '../../../app/theme/bitwave_theme.dart';
 import '../../library/domain/track.dart';
 import '../data/artwork_repository.dart';
-import '../data/apple_music_motion_provider.dart';
 import '../domain/artwork_asset.dart';
 
 class ArtworkEditorSheet extends StatefulWidget {
@@ -38,7 +37,6 @@ class _ArtworkEditorSheetState extends State<ArtworkEditorSheet> {
   late double _focusY;
   late String _fit;
   bool _saving = false;
-  final _motionProvider = AppleMusicMotionProvider();
 
   @override
   void initState() {
@@ -47,10 +45,8 @@ class _ArtworkEditorSheetState extends State<ArtworkEditorSheet> {
     _asset = track.customArtworkPath == null
         ? null
         : ArtworkAsset(
-            path: track.customArtworkPath!,
+            path: track.artworkPath ?? track.customArtworkPath!,
             aspectRatio: track.artworkAspectRatio ?? 1,
-            animated: track.animatedArtwork,
-            posterPath: track.artworkPosterPath,
           );
     _ratio = track.artworkAspectRatio;
     _focusX = track.artworkFocusX;
@@ -59,15 +55,11 @@ class _ArtworkEditorSheetState extends State<ArtworkEditorSheet> {
   }
 
   double get _previewRatio => _ratio ?? _asset?.aspectRatio ?? 1;
-  String? get _previewPath => _asset?.animated == true
-      ? _asset?.posterPath
-      : _asset?.path ?? widget.tracks.first.artworkPath;
+  String? get _previewPath => _asset?.path ?? widget.tracks.first.artworkPath;
 
-  Future<void> _pick({required bool motion}) async {
+  Future<void> _pick() async {
     try {
-      final asset = motion
-          ? await widget.repository.importMotionArtwork()
-          : await widget.repository.importStillImage();
+      final asset = await widget.repository.importStillImage();
       if (asset == null || !mounted) return;
       setState(() {
         _asset = asset;
@@ -111,79 +103,8 @@ class _ArtworkEditorSheetState extends State<ArtworkEditorSheet> {
     if (mounted) Navigator.pop(context);
   }
 
-  Future<void> _findMotionArtwork() async {
-    final track = widget.tracks.first;
-    if (track.artist.trim().isEmpty || track.album.trim().isEmpty) {
-      _message(
-        'Add artist and album tags before searching for motion artwork.',
-      );
-      return;
-    }
-    setState(() => _saving = true);
-    try {
-      final match = await _motionProvider.search(
-        artist: track.albumArtist.trim().isEmpty
-            ? track.artist
-            : track.albumArtist,
-        album: track.album,
-        title: track.title,
-      );
-      if (!mounted) return;
-      if (match == null) {
-        _message('No animated Apple Music artwork was found for this album.');
-        return;
-      }
-      final options = <(String, String, double)>[
-        if (match.squareUrl != null)
-          ('Square motion cover', match.squareUrl!, 1),
-        if (match.tallUrl != null) ('Tall motion cover', match.tallUrl!, .5625),
-      ];
-      final selected = await showDialog<(String, String, double)>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Review motion artwork match'),
-          content: Text(
-            '${match.artist} · ${match.album}\n\n'
-            'This community service streams the selected motion cover while online. '
-            'The current local artwork remains its static fallback.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            ...options.map(
-              (option) => TextButton(
-                onPressed: () => Navigator.pop(context, option),
-                child: Text('Use ${option.$1.toLowerCase()}'),
-              ),
-            ),
-          ],
-        ),
-      );
-      if (selected == null || !mounted) return;
-      await widget.repository.assignMotionArtworkUrl(
-        widget.tracks,
-        selected.$2,
-        aspectRatio: selected.$3,
-      );
-      await widget.onSaved();
-      if (mounted) Navigator.pop(context);
-    } catch (error) {
-      if (mounted) _message('Motion artwork search failed: $error');
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
   void _message(String text) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
-
-  @override
-  void dispose() {
-    _motionProvider.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -233,26 +154,12 @@ class _ArtworkEditorSheetState extends State<ArtworkEditorSheet> {
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: _saving ? null : () => _pick(motion: false),
+                      onPressed: _saving ? null : _pick,
                       icon: const Icon(Icons.image_outlined),
                       label: const Text('Choose image'),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _saving ? null : () => _pick(motion: true),
-                      icon: const Icon(Icons.motion_photos_on_outlined),
-                      label: const Text('Motion cover'),
-                    ),
-                  ),
                 ],
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: _saving ? null : _findMotionArtwork,
-                icon: const Icon(Icons.auto_awesome_motion_outlined),
-                label: const Text('Find Apple Music motion cover'),
               ),
               const SizedBox(height: 18),
               Center(

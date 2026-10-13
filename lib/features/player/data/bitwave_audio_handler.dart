@@ -6,19 +6,25 @@ import 'package:just_audio/just_audio.dart';
 import 'package:flutter/services.dart';
 
 import '../../library/domain/track.dart';
+import '../../lastfm/data/lastfm_scrobbler.dart';
 
 class BitwaveAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
   BitwaveAudioHandler() {
+    unawaited(lastFm.initialize());
     _player.playbackEventStream.listen((_) => _publishState());
     _player.currentIndexStream.listen((index) {
       if (index != null && index < _tracks.length) {
         final track = _tracks[index];
         mediaItem.add(_item(track));
-        _publishIosAnimatedArtwork(track);
+        lastFm.onTrackChanged(track);
+      } else if (index == null) {
+        lastFm.onTrackChanged(null);
       }
       _publishState();
     });
+    _player.playingStream.listen(lastFm.onPlaybackState);
+    _player.positionStream.listen(lastFm.onPosition);
     _player.durationStream.listen((_) => _publishState());
     _player.shuffleModeEnabledStream.listen((_) => _publishState());
     _player.loopModeStream.listen((_) => _publishState());
@@ -28,9 +34,7 @@ class BitwaveAudioHandler extends BaseAudioHandler
     handleInterruptions: true,
     maxSkipsOnError: 3,
   );
-  static const MethodChannel _iosArtworkChannel = MethodChannel(
-    'org.bitwave.dev/now_playing_artwork',
-  );
+  final LastFmScrobbler lastFm = LastFmScrobbler();
   List<Track> _tracks = [];
   AudioPlayer get player => _player;
   List<Track> get tracks => List.unmodifiable(_tracks);
@@ -46,13 +50,7 @@ class BitwaveAudioHandler extends BaseAudioHandler
   );
 
   static Uri? _artUri(Track track) {
-    // Motion art is rendered only in Bitwave; expose its generated still frame
-    // to Android and iOS system media surfaces.
-    final localPath = track.customArtworkPath != null
-        ? track.animatedArtwork
-              ? track.artworkPosterPath ?? track.embeddedArtworkPath
-              : track.customArtworkPath
-        : track.embeddedArtworkPath;
+    final localPath = track.artworkPath;
     if (localPath != null) return Uri.file(localPath);
     return track.providerArtworkUrl == null
         ? null
@@ -147,40 +145,7 @@ class BitwaveAudioHandler extends BaseAudioHandler
     queue.add(_tracks.map(_item).toList(growable: false));
     if (_player.currentIndex == index) {
       mediaItem.add(_item(track));
-      _publishIosAnimatedArtwork(track);
     }
-  }
-
-  void _publishIosAnimatedArtwork(Track track) {
-    if (!Platform.isIOS) return;
-    final videoPath = track.motionArtworkPath;
-    final videoUrl = track.motionArtworkUrl;
-    final posterPath = track.artworkPosterPath;
-    final extension = videoPath?.toLowerCase().split('.').last;
-    final localVideoSupported =
-        videoPath != null && const {'mp4', 'mov', 'm4v'}.contains(extension);
-    if (!localVideoSupported && videoUrl == null) {
-      _iosArtworkChannel
-          .invokeMethod<void>('clearAnimatedArtwork')
-          .catchError((Object _) {});
-      return;
-    }
-    final previewPath =
-        posterPath ?? track.embeddedArtworkPath ?? track.customArtworkPath;
-    _iosArtworkChannel
-        .invokeMethod<void>('setAnimatedArtwork', {
-          'artworkId':
-              '${track.id}:${track.modifiedMs}:${videoUrl ?? videoPath}',
-          if (localVideoSupported) 'videoPath': videoPath,
-          if (!localVideoSupported) 'videoUrl': videoUrl,
-          if (previewPath != null) 'posterPath': previewPath,
-          if (track.providerArtworkUrl != null)
-            'posterUrl': track.providerArtworkUrl,
-          'aspectRatio': track.artworkAspectRatio ?? 1.0,
-        })
-        .catchError((Object _) {
-          // Older iOS releases keep the static poster and normal playback controls.
-        });
   }
 
   Future<void> toggleShuffle() async =>

@@ -13,7 +13,7 @@ class LibraryDatabase {
     final dir = await getApplicationSupportDirectory();
     _database = await openDatabase(
       p.join(dir.path, 'bitwave_library.db'),
-      version: 6,
+      version: 7,
       onCreate: (db, _) async {
         await db.execute('''CREATE TABLE tracks (
           id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
@@ -27,7 +27,7 @@ class LibraryDatabase {
           artwork_focus_y REAL NOT NULL DEFAULT 0, artwork_fit TEXT NOT NULL DEFAULT 'crop',
           animated_artwork INTEGER NOT NULL DEFAULT 0, artwork_poster_path TEXT,
           favorite INTEGER NOT NULL DEFAULT 0, lyrics TEXT,
-          motion_artwork_url TEXT)''');
+          motion_artwork_url TEXT, spicy_track_id TEXT)''');
         await db.execute(
           'CREATE INDEX tracks_album ON tracks(album, album_artist)',
         );
@@ -85,6 +85,9 @@ class LibraryDatabase {
           await db.execute('ALTER TABLE tracks ADD COLUMN disc_number INTEGER');
         }
         if (oldVersion < 6) await _createPlaylistTables(db);
+        if (oldVersion < 7) {
+          await db.execute('ALTER TABLE tracks ADD COLUMN spicy_track_id TEXT');
+        }
       },
     );
     return _database!;
@@ -216,6 +219,16 @@ class LibraryDatabase {
     await batch.commit(noResult: true);
   }
 
+  Future<void> updateSpicyTrackId({
+    required String id,
+    required String? spotifyTrackId,
+  }) async => (await database).update(
+    'tracks',
+    {'spicy_track_id': spotifyTrackId},
+    where: 'id = ?',
+    whereArgs: [id],
+  );
+
   Future<void> resetArtwork(List<String> trackIds) async {
     if (trackIds.isEmpty) return;
     final db = await database;
@@ -234,29 +247,6 @@ class LibraryDatabase {
           'animated_artwork': 0,
           'artwork_poster_path': null,
           'motion_artwork_url': null,
-        },
-        where: 'id = ?',
-        whereArgs: [id],
-      );
-    }
-    await batch.commit(noResult: true);
-  }
-
-  Future<void> saveMotionArtworkUrl(
-    List<String> trackIds,
-    String? url, {
-    double? aspectRatio,
-  }) async {
-    if (trackIds.isEmpty) return;
-    final batch = (await database).batch();
-    for (final id in trackIds) {
-      batch.update(
-        'tracks',
-        {
-          'motion_artwork_url': url,
-          'animated_artwork': url == null ? 0 : 1,
-          if (url != null && aspectRatio != null)
-            'artwork_aspect_ratio': aspectRatio,
         },
         where: 'id = ?',
         whereArgs: [id],

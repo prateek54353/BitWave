@@ -6,7 +6,7 @@ import 'dart:ui' show ImageFilter;
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../app/theme/bitwave_theme.dart';
 import '../data/library_repository.dart';
@@ -15,15 +15,20 @@ import '../../player/data/bitwave_audio_handler.dart';
 import '../../artwork/data/artwork_repository.dart';
 import '../../artwork/presentation/artwork_editor_sheet.dart';
 import '../../lyrics/domain/lrc_document.dart';
+import '../../lyrics/data/spicy_lyrics_provider.dart';
+import '../../lyrics/presentation/spicy_lyrics_settings_page.dart';
+import '../../lastfm/presentation/lastfm_settings_page.dart';
 import '../../playlists/domain/playlist.dart';
 import 'track_details_page.dart';
 
 enum LibrarySection {
   library,
+  recentlyAdded,
   albums,
   artists,
   songs,
   genres,
+  folders,
   favorites,
   playlists,
   queue,
@@ -54,8 +59,11 @@ class _LibraryScreenState extends State<LibraryScreen>
   bool _grid = true;
   bool _searching = false;
   bool _scanning = false;
+  bool _libraryReady = false;
   String _query = '';
   String? _selectedArtist;
+  String? _selectedFolderPath;
+  String? _selectedGenre;
   String? _selectedPlaylistId;
   List<Playlist> _playlists = [];
   List<Track> _selectedPlaylistTracks = [];
@@ -66,7 +74,6 @@ class _LibraryScreenState extends State<LibraryScreen>
   bool _iosFolderRescanPending = false;
   DateTime? _sleepDeadline;
   String _artworkStyle = 'automatic';
-  bool _animatedArtworkEnabled = true;
   int _libraryBytes = 0;
   int _filesChangedThisWeek = 0;
   Map<String, List<Track>> _albumIndex = {};
@@ -207,8 +214,54 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   void _selectCategory(int index) {
     if (index < 0 || index >= _categoryTitles.length) return;
+    setState(() {
+      _activeCategoryIndex = index;
+      _activeDeckItemIndex = 0;
+      _section = switch (index) {
+        0 => LibrarySection.recentlyAdded,
+        1 => LibrarySection.albums,
+        2 => LibrarySection.artists,
+        3 => LibrarySection.songs,
+        4 => LibrarySection.genres,
+        5 => LibrarySection.folders,
+        6 => LibrarySection.playlists,
+        _ => LibrarySection.library,
+      };
+      _selectedArtist = null;
+      _selectedFolderPath = null;
+      _selectedGenre = null;
+      _selectedPlaylistId = null;
+      _selectedPlaylistTracks = [];
+      _albumDetailTracks = null;
+    });
+    _openLibrary();
+  }
+
+  void _onCategoryTap(int index) {
+    if (index < 0 || index >= _categoryTitles.length) return;
+    if (index == _activeCategoryIndex) {
+      _selectCategory(index);
+      return;
+    }
     _activateCategory(index);
-    _scrollRibbonTo(index);
+  }
+
+  void _backToLibraryDeck() {
+    setState(() {
+      _section = LibrarySection.library;
+      _selectedArtist = null;
+      _selectedFolderPath = null;
+      _selectedGenre = null;
+      _selectedPlaylistId = null;
+      _selectedPlaylistTracks = [];
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_deckController.hasClients) {
+        _deckController.jumpToPage(_activeCategoryIndex);
+      }
+      _scrollRibbonTo(_activeCategoryIndex);
+    });
   }
 
   void _activateCategory(int index) {
@@ -268,24 +321,31 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   Future<void> _refresh() async {
     final tracks = await widget.library.load();
-    final playlists = await widget.library.database.playlists();
-    final playlistTracks = _selectedPlaylistId == null
-        ? <Track>[]
-        : await widget.library.database.playlistTracks(_selectedPlaylistId!);
-    final style = await widget.library.database.getSetting(
-      'now_playing_artwork_style',
-    );
-    final motion = await widget.library.database.getSetting(
-      'animated_artwork_enabled',
-    );
     if (mounted) {
       setState(() {
         _tracks = tracks;
-        _playlists = playlists;
-        _selectedPlaylistTracks = playlistTracks;
         _indexLibrary(tracks);
+        _libraryReady = true;
+      });
+    }
+    final playlistId = _selectedPlaylistId;
+    final results = await Future.wait([
+      widget.library.database.playlists(),
+      playlistId == null
+          ? Future.value(<Track>[])
+          : widget.library.database.playlistTracks(playlistId),
+      widget.library.database.getSetting('now_playing_artwork_style'),
+    ]);
+    final playlists = results[0] as List<Playlist>;
+    final playlistTracks = results[1] as List<Track>;
+    final style = results[2] as String?;
+    if (mounted) {
+      setState(() {
+        _playlists = playlists;
+        if (_selectedPlaylistId == playlistId) {
+          _selectedPlaylistTracks = playlistTracks;
+        }
         _artworkStyle = style ?? 'automatic';
-        _animatedArtworkEnabled = motion != 'false';
       });
     }
     final tracksById = {for (final track in tracks) track.id: track};
@@ -429,6 +489,24 @@ class _LibraryScreenState extends State<LibraryScreen>
     if (_section == LibrarySection.favorites) {
       tracks = tracks.where((t) => t.favorite).toList();
     }
+    if (_section == LibrarySection.recentlyAdded) {
+      tracks = List<Track>.of(tracks)
+        ..sort((a, b) => b.modifiedMs.compareTo(a.modifiedMs));
+    }
+    if (_section == LibrarySection.folders && _selectedFolderPath != null) {
+      tracks = tracks
+          .where((track) => File(track.path).parent.path == _selectedFolderPath)
+          .toList();
+    }
+    if (_section == LibrarySection.genres && _selectedGenre != null) {
+      tracks = tracks
+          .where(
+            (track) =>
+                (track.genre.isEmpty ? 'Uncategorized' : track.genre) ==
+                _selectedGenre,
+          )
+          .toList();
+    }
     final q = _query.trim().toLowerCase();
     if (q.isNotEmpty) {
       tracks = tracks
@@ -444,10 +522,15 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   String get _title => switch (_section) {
     LibrarySection.library => 'Your library',
+    LibrarySection.recentlyAdded => 'Recently added',
     LibrarySection.albums => 'Albums',
     LibrarySection.artists => 'Artists',
     LibrarySection.songs => 'Songs',
     LibrarySection.genres => 'Genres',
+    LibrarySection.folders =>
+      _selectedFolderPath == null
+          ? 'Folders'
+          : _selectedFolderPath!.split(Platform.pathSeparator).last,
     LibrarySection.favorites => 'Favorites',
     LibrarySection.playlists =>
       _selectedPlaylistId == null
@@ -517,7 +600,6 @@ class _LibraryScreenState extends State<LibraryScreen>
                   child: _NowPlayingScreen(
                     audio: widget.audio,
                     artworkStyle: _artworkStyle,
-                    animatedArtworkEnabled: _animatedArtworkEnabled,
                     onOpenDetails: _openTrackDetails,
                     onAddToPlaylist: _addTrackToPlaylist,
                     onOpenMenu: _openMenu,
@@ -647,6 +729,11 @@ class _LibraryScreenState extends State<LibraryScreen>
         backgroundColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
         toolbarHeight: 64,
+        leading: IconButton(
+          tooltip: 'Back to library deck',
+          onPressed: _backToLibraryDeck,
+          icon: const Icon(Icons.arrow_back_rounded),
+        ),
         title: _searching
             ? TextField(
                 autofocus: true,
@@ -805,7 +892,9 @@ class _LibraryScreenState extends State<LibraryScreen>
               Padding(
                 padding: const EdgeInsets.fromLTRB(29, 14, 28, 0),
                 child: Text(
-                  _activeCategoryIndex == 0
+                  !_libraryReady
+                      ? 'Loading library…'
+                      : _activeCategoryIndex == 0
                       ? '$_filesChangedThisWeek files changed this week'
                       : '${_categoryCount(_activeCategoryIndex)} ${_categoryCountLabel(_activeCategoryIndex)}',
                   style: const TextStyle(
@@ -902,7 +991,9 @@ class _LibraryScreenState extends State<LibraryScreen>
         ),
         const SizedBox(height: 4),
         Text(
-          '${_formatStorage(totalBytes)}  ·  ${_tracks.length} ${_tracks.length == 1 ? 'track' : 'tracks'}',
+          _libraryReady
+              ? '${_formatStorage(totalBytes)}  ·  ${_tracks.length} ${_tracks.length == 1 ? 'track' : 'tracks'}'
+              : 'Loading library…',
           style: const TextStyle(color: Color(0xFFB8B8B8), fontSize: 14),
         ),
         const SizedBox(height: 18),
@@ -1077,7 +1168,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                 (index) => SizedBox(
                   width: tabWidth,
                   child: InkWell(
-                    onTap: () => _selectCategory(index),
+                    onTap: () => _onCategoryTap(index),
                     child: Padding(
                       padding: const EdgeInsets.only(left: 4),
                       child: Column(
@@ -1103,7 +1194,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            '${_categoryCount(index)}',
+                            _libraryReady ? '${_categoryCount(index)}' : '—',
                             style: TextStyle(
                               color: index == _activeCategoryIndex
                                   ? const Color(0xFFE7E5E3)
@@ -1145,7 +1236,7 @@ class _LibraryScreenState extends State<LibraryScreen>
               : (itemIndex - 1).clamp(0, items.length - 1);
         });
       },
-      child: _NowPlayingArtwork(track: track, animated: false),
+      child: _NowPlayingArtwork(track: track),
     );
   }
 
@@ -1288,7 +1379,14 @@ class _LibraryScreenState extends State<LibraryScreen>
               : switch (_section) {
                   LibrarySection.albums => _albumBrowser(tracks),
                   LibrarySection.artists => _artistBrowser(tracks),
-                  LibrarySection.genres => _genreBrowser(tracks),
+                  LibrarySection.genres =>
+                    _selectedGenre == null
+                        ? _genreBrowser(tracks)
+                        : _songList(tracks),
+                  LibrarySection.folders =>
+                    _selectedFolderPath == null
+                        ? _folderBrowser(tracks)
+                        : _songList(tracks),
                   _ => _songList(tracks),
                 },
         ),
@@ -1918,8 +2016,36 @@ class _LibraryScreenState extends State<LibraryScreen>
           '${genres[names[i]]!.length} tracks',
           style: const TextStyle(color: BitwaveColors.muted),
         ),
-        onTap: () => _showTrackSheet(names[i], genres[names[i]]!),
+        onTap: () => setState(() => _selectedGenre = names[i]),
       ),
+    );
+  }
+
+  Widget _folderBrowser(List<Track> tracks) {
+    final folders = <String, List<Track>>{};
+    for (final track in tracks) {
+      folders.putIfAbsent(File(track.path).parent.path, () => []).add(track);
+    }
+    final paths = folders.keys.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    if (paths.isEmpty) return _emptyLibrary();
+    return ListView.builder(
+      itemCount: paths.length,
+      itemBuilder: (context, index) {
+        final path = paths[index];
+        final folderTracks = folders[path]!;
+        final name = path.split(Platform.pathSeparator).last;
+        return ListTile(
+          leading: const Icon(
+            Icons.folder_outlined,
+            color: BitwaveColors.accent,
+          ),
+          title: Text(name.isEmpty ? path : name),
+          subtitle: Text('${folderTracks.length} tracks'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => setState(() => _selectedFolderPath = path),
+        );
+      },
     );
   }
 
@@ -2099,7 +2225,9 @@ class _LibraryScreenState extends State<LibraryScreen>
                 ),
                 const SizedBox(height: 17),
                 Text(
-                  '${_tracks.length} tracks  ·  ${_albumCount()} albums',
+                  _libraryReady
+                      ? '${_tracks.length} tracks  ·  ${_albumCount()} albums'
+                      : 'Loading library…',
                   style: const TextStyle(
                     color: BitwaveColors.muted,
                     fontSize: 12,
@@ -2286,6 +2414,8 @@ class _LibraryScreenState extends State<LibraryScreen>
       setState(() {
         _section = section;
         _selectedArtist = null;
+        _selectedFolderPath = null;
+        _selectedGenre = null;
         _selectedPlaylistId = null;
         _selectedPlaylistTracks = [];
         if (section == LibrarySection.library) _activeCategoryIndex = 0;
@@ -2536,6 +2666,34 @@ class _LibraryScreenState extends State<LibraryScreen>
         'Add supported audio files from a folder',
         onTap: _importFolder,
       ),
+      _settingHeading('SCROBBLING'),
+      _settingRow(
+        Icons.radio_button_checked_rounded,
+        'Last.fm',
+        widget.audio.lastFm.connected
+            ? 'Connected as ${widget.audio.lastFm.username ?? 'Last.fm user'}'
+            : 'Connect your account and scrobble plays',
+        onTap: () async {
+          await Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) =>
+                  LastFmSettingsPage(scrobbler: widget.audio.lastFm),
+            ),
+          );
+          if (mounted) setState(() {});
+        },
+      ),
+      _settingHeading('LYRICS PROVIDERS'),
+      _settingRow(
+        Icons.lyrics_rounded,
+        'Spicy Lyrics',
+        'API key for word-synced lyrics',
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const SpicyLyricsSettingsPage(),
+          ),
+        ),
+      ),
       _settingHeading('ARTWORK PROVIDERS'),
       _settingRow(
         Icons.music_note_rounded,
@@ -2555,26 +2713,6 @@ class _LibraryScreenState extends State<LibraryScreen>
         'Artwork style',
         _artworkStyleLabel(_artworkStyle),
         onTap: _chooseArtworkStyle,
-      ),
-      SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        secondary: const Icon(
-          Icons.motion_photos_on_outlined,
-          color: BitwaveColors.muted,
-        ),
-        title: const Text('Animated artwork'),
-        subtitle: const Text(
-          'Play imported motion covers in the full player',
-          style: TextStyle(color: BitwaveColors.muted, fontSize: 12),
-        ),
-        value: _animatedArtworkEnabled,
-        onChanged: (value) async {
-          await widget.library.database.setSetting(
-            'animated_artwork_enabled',
-            '$value',
-          );
-          if (mounted) setState(() => _animatedArtworkEnabled = value);
-        },
       ),
       _settingHeading('PLAYBACK'),
       _settingRow(
@@ -2881,7 +3019,7 @@ class _AlbumDetailPage extends StatelessWidget {
               background: Stack(
                 fit: StackFit.expand,
                 children: [
-                  _NowPlayingArtwork(track: album, animated: false),
+                  _NowPlayingArtwork(track: album),
                   const DecoratedBox(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
@@ -3042,7 +3180,6 @@ class _NowPlayingScreen extends StatefulWidget {
   const _NowPlayingScreen({
     required this.audio,
     required this.artworkStyle,
-    required this.animatedArtworkEnabled,
     required this.onOpenDetails,
     required this.onAddToPlaylist,
     required this.onOpenMenu,
@@ -3050,7 +3187,6 @@ class _NowPlayingScreen extends StatefulWidget {
 
   final BitwaveAudioHandler audio;
   final String artworkStyle;
-  final bool animatedArtworkEnabled;
   final ValueChanged<Track> onOpenDetails;
   final ValueChanged<Track> onAddToPlaylist;
   final VoidCallback onOpenMenu;
@@ -3166,6 +3302,40 @@ class _NowPlayingPill extends StatelessWidget {
 
 class _NowPlayingScreenState extends State<_NowPlayingScreen> {
   bool _immersiveArtwork = false;
+  bool _playbackControlVisible = true;
+  Timer? _playbackControlTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _schedulePlaybackControlHide();
+  }
+
+  @override
+  void didUpdateWidget(covariant _NowPlayingScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _revealPlaybackControl();
+  }
+
+  @override
+  void dispose() {
+    _playbackControlTimer?.cancel();
+    super.dispose();
+  }
+
+  void _schedulePlaybackControlHide() {
+    _playbackControlTimer?.cancel();
+    _playbackControlTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _playbackControlVisible = false);
+    });
+  }
+
+  void _revealPlaybackControl() {
+    if (!_playbackControlVisible) {
+      setState(() => _playbackControlVisible = true);
+    }
+    _schedulePlaybackControlHide();
+  }
 
   double _aspectRatio(Track? track) => switch (widget.artworkStyle) {
     'square' => 1,
@@ -3222,14 +3392,7 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
           .where((t) => t.id == item.id)
           .firstOrNull;
       final ratio = _aspectRatio(track);
-      final reducedMotion = MediaQuery.disableAnimationsOf(context);
-      final animatedCoverAvailable =
-          widget.animatedArtworkEnabled &&
-          !reducedMotion &&
-          track != null &&
-          track.animatedArtwork &&
-          (track.motionArtworkPath != null || track.motionArtworkUrl != null);
-      final immersiveArtwork = _immersiveArtwork || animatedCoverAvailable;
+      final immersiveArtwork = _immersiveArtwork;
 
       return Scaffold(
         backgroundColor: const Color(0xFF090A0B),
@@ -3246,9 +3409,6 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                 child: _NowPlayingArtwork(
                   key: ValueKey('immersive-${track.id}'),
                   track: track,
-                  animated:
-                      widget.animatedArtworkEnabled &&
-                      !MediaQuery.disableAnimationsOf(context),
                 ),
               ),
             const DecoratedBox(
@@ -3281,6 +3441,14 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
             SafeArea(
               child: LayoutBuilder(
                 builder: (context, constraints) {
+                  if (constraints.maxWidth > constraints.maxHeight) {
+                    return _landscapeNowPlaying(
+                      constraints: constraints,
+                      item: item,
+                      track: track,
+                      ratio: ratio,
+                    );
+                  }
                   final artHeight = math.min(
                     constraints.maxWidth / ratio,
                     constraints.maxHeight * .48,
@@ -3305,21 +3473,29 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                                   ? const _ArtworkPlaceholder()
                                   : GestureDetector(
                                       behavior: HitTestBehavior.opaque,
-                                      onTap: () => widget.audio.player.playing
-                                          ? widget.audio.pause()
-                                          : widget.audio.play(),
-                                      onDoubleTap: animatedCoverAvailable
-                                          ? null
-                                          : () => setState(
-                                              () => _immersiveArtwork =
-                                                  !_immersiveArtwork,
-                                            ),
+                                      onTap: () {
+                                        _revealPlaybackControl();
+                                        if (widget.audio.player.playing) {
+                                          widget.audio.pause();
+                                        } else {
+                                          widget.audio.play();
+                                        }
+                                      },
+                                      onDoubleTap: () {
+                                        _revealPlaybackControl();
+                                        setState(
+                                          () => _immersiveArtwork =
+                                              !_immersiveArtwork,
+                                        );
+                                      },
                                       onVerticalDragEnd: (details) {
                                         final velocity =
                                             details.primaryVelocity ?? 0;
                                         if (velocity < -350) {
+                                          _revealPlaybackControl();
                                           widget.audio.skipToNext();
                                         } else if (velocity > 350) {
+                                          _revealPlaybackControl();
                                           widget.audio.skipToPrevious();
                                         }
                                       },
@@ -3328,33 +3504,31 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                                           : _NowPlayingArtwork(
                                               key: ValueKey(track.id),
                                               track: track,
-                                              animated:
-                                                  widget
-                                                      .animatedArtworkEnabled &&
-                                                  !MediaQuery.disableAnimationsOf(
-                                                    context,
-                                                  ),
                                             ),
                                     ),
                               if (track != null)
                                 IgnorePointer(
-                                  child: StreamBuilder<bool>(
-                                    stream: widget.audio.player.playingStream,
-                                    initialData: widget.audio.player.playing,
-                                    builder: (context, playback) => Center(
-                                      child: DecoratedBox(
-                                        decoration: const BoxDecoration(
-                                          color: Color(0x55000000),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: Padding(
-                                          padding: const EdgeInsets.all(15),
-                                          child: Icon(
-                                            playback.data == true
-                                                ? Icons.pause_rounded
-                                                : Icons.play_arrow_rounded,
-                                            size: 38,
-                                            color: Colors.white,
+                                  child: AnimatedOpacity(
+                                    opacity: _playbackControlVisible ? 1 : 0,
+                                    duration: const Duration(milliseconds: 260),
+                                    child: StreamBuilder<bool>(
+                                      stream: widget.audio.player.playingStream,
+                                      initialData: widget.audio.player.playing,
+                                      builder: (context, playback) => Center(
+                                        child: DecoratedBox(
+                                          decoration: const BoxDecoration(
+                                            color: Color(0x55000000),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(15),
+                                            child: Icon(
+                                              playback.data == true
+                                                  ? Icons.pause_rounded
+                                                  : Icons.play_arrow_rounded,
+                                              size: 38,
+                                              color: Colors.white,
+                                            ),
                                           ),
                                         ),
                                       ),
@@ -3525,49 +3699,233 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
 
   static String _format(Duration d) =>
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+
+  Widget _landscapeNowPlaying({
+    required BoxConstraints constraints,
+    required MediaItem item,
+    required Track? track,
+    required double ratio,
+  }) {
+    final artWidth = math.min(
+      (constraints.maxHeight - 28) * ratio,
+      constraints.maxWidth * .48,
+    );
+    final albumLine = [
+      if ((track?.displayAlbum ?? '').isNotEmpty) track!.displayAlbum,
+      if (track?.year != null) '${track!.year}',
+    ].join('  ·  ');
+    return Row(
+      children: [
+        SizedBox(
+          width: constraints.maxWidth * .49,
+          child: Center(
+            child: SizedBox(
+              width: artWidth,
+              height: artWidth / ratio,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (track != null)
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        _revealPlaybackControl();
+                        if (widget.audio.player.playing) {
+                          widget.audio.pause();
+                        } else {
+                          widget.audio.play();
+                        }
+                      },
+                      onDoubleTap: () {
+                        _revealPlaybackControl();
+                        setState(() => _immersiveArtwork = !_immersiveArtwork);
+                      },
+                      onVerticalDragEnd: (details) {
+                        final velocity = details.primaryVelocity ?? 0;
+                        if (velocity < -350) {
+                          _revealPlaybackControl();
+                          widget.audio.skipToNext();
+                        } else if (velocity > 350) {
+                          _revealPlaybackControl();
+                          widget.audio.skipToPrevious();
+                        }
+                      },
+                      child: _NowPlayingArtwork(
+                        key: ValueKey('landscape-${track.id}'),
+                        track: track,
+                      ),
+                    )
+                  else
+                    const _ArtworkPlaceholder(),
+                  if (track != null)
+                    IgnorePointer(
+                      child: AnimatedOpacity(
+                        opacity: _playbackControlVisible ? 1 : 0,
+                        duration: const Duration(milliseconds: 260),
+                        child: StreamBuilder<bool>(
+                          stream: widget.audio.player.playingStream,
+                          initialData: widget.audio.player.playing,
+                          builder: (context, playback) => Center(
+                            child: DecoratedBox(
+                              decoration: const BoxDecoration(
+                                color: Color(0x55000000),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.all(14),
+                                child: Icon(
+                                  playback.data == true
+                                      ? Icons.pause_rounded
+                                      : Icons.play_arrow_rounded,
+                                  size: 34,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 46, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Spacer(),
+                Center(
+                  child: Column(
+                    children: [
+                      Text(
+                        albumLine.isEmpty ? item.album ?? '' : albumLine,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 7),
+                      Text(
+                        '${track?.format ?? 'Audio'}${track?.bitrateKbps == null ? '' : '  ·  ${track!.bitrateKbps} kbps'}',
+                        style: const TextStyle(
+                          color: BitwaveColors.muted,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Spacer(flex: 2),
+                InkWell(
+                  onTap: track == null
+                      ? null
+                      : () => widget.onOpenDetails(track),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 34,
+                          height: 1.05,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -.8,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        track?.displayArtist ?? item.artist ?? 'Unknown artist',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 18),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                StreamBuilder<Duration>(
+                  stream: widget.audio.player.positionStream,
+                  builder: (context, positionSnapshot) {
+                    final duration = item.duration ?? Duration.zero;
+                    final position = positionSnapshot.data ?? Duration.zero;
+                    final max = duration.inMilliseconds.toDouble();
+                    final value = max <= 0
+                        ? 0.0
+                        : position.inMilliseconds
+                              .clamp(0, duration.inMilliseconds)
+                              .toDouble();
+                    return Column(
+                      children: [
+                        SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            trackHeight: 2.5,
+                            thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 3.2,
+                            ),
+                            overlayShape: const RoundSliderOverlayShape(
+                              overlayRadius: 12,
+                            ),
+                          ),
+                          child: Slider(
+                            value: value,
+                            max: max <= 0 ? 1 : max,
+                            onChanged: max <= 0
+                                ? null
+                                : (nextPosition) => widget.audio.seek(
+                                    Duration(
+                                      milliseconds: nextPosition.round(),
+                                    ),
+                                  ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 5),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(_format(position)),
+                              Text(_format(duration)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: 13),
+                Center(
+                  child: _OutputDeviceLabel(
+                    formatInfo:
+                        '${track?.format ?? 'Audio'}${track?.bitrateKbps == null ? '' : '  ·  ${track!.bitrateKbps} kbps'}',
+                  ),
+                ),
+                const Spacer(),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
-class _AdaptiveArtworkBackdrop extends StatefulWidget {
+class _AdaptiveArtworkBackdrop extends StatelessWidget {
   const _AdaptiveArtworkBackdrop({super.key, required this.track});
 
   final Track track;
 
   @override
-  State<_AdaptiveArtworkBackdrop> createState() =>
-      _AdaptiveArtworkBackdropState();
-}
-
-class _AdaptiveArtworkBackdropState extends State<_AdaptiveArtworkBackdrop>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _motion = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 22),
-  );
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _motion.stop();
-    } else if (!_motion.isAnimating) {
-      _motion.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void dispose() {
-    _motion.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final track = widget.track;
-    final path = track.customArtworkPath != null
-        ? (track.animatedArtwork
-              ? track.artworkPosterPath ?? track.customArtworkPath
-              : track.customArtworkPath)
-        : track.embeddedArtworkPath;
+    final track = this.track;
+    final path = track.artworkPath ?? track.embeddedArtworkPath;
     final Widget image;
     if (track.providerArtworkUrl != null && track.customArtworkPath == null) {
       image = Image.network(
@@ -3587,21 +3945,14 @@ class _AdaptiveArtworkBackdropState extends State<_AdaptiveArtworkBackdrop>
       image = const _ArtworkPlaceholder();
     }
     return ClipRect(
-      child: AnimatedBuilder(
-        animation: _motion,
+      child: Transform.scale(
+        scale: 1.22,
         child: RepaintBoundary(
           child: ImageFiltered(
             imageFilter: ImageFilter.blur(sigmaX: 35, sigmaY: 35),
             child: image,
           ),
         ),
-        builder: (context, child) {
-          final phase = _motion.value;
-          return Transform.translate(
-            offset: Offset((phase - .5) * 22, (phase - .5) * -18),
-            child: Transform.scale(scale: 1.22 + phase * .035, child: child),
-          );
-        },
       ),
     );
   }
@@ -3650,6 +4001,11 @@ class _PlayerLyricLabelState extends State<_PlayerLyricLabel> {
   }
 
   void _parse() {
+    if (widget.lyrics.startsWith('BITWAVE_SPICY_LYRICS:')) {
+      _document = const LrcDocument([]);
+      _plainPreview = null;
+      return;
+    }
     _document = LrcDocument.parse(widget.lyrics);
     final plain = widget.lyrics
         .split(RegExp(r'\r?\n'))
@@ -3674,30 +4030,163 @@ class _PlayerLyricLabelState extends State<_PlayerLyricLabel> {
     stream: widget.positionStream,
     builder: (context, snapshot) {
       final position = snapshot.data ?? Duration.zero;
-      final current = _document.lines.isEmpty
-          ? _plainPreview
-          : _document.lineAt(position);
-      if (current == null || current.isEmpty) {
+      if (widget.lyrics.startsWith('BITWAVE_SPICY_LYRICS:')) {
+        try {
+          return _spicyLyricsView(
+            SpicyLyricsResult.fromJson(widget.lyrics),
+            position,
+          );
+        } catch (_) {
+          return const SizedBox(height: 54);
+        }
+      }
+      String? current;
+      String? next;
+      if (_document.lines.isEmpty) {
+        final lines = (_plainPreview ?? '').split('\n');
+        current = lines.isEmpty ? null : lines.first;
+        next = lines.length > 1 ? lines[1] : null;
+      } else {
+        var index = -1;
+        var low = 0;
+        var high = _document.lines.length - 1;
+        while (low <= high) {
+          final middle = (low + high) >> 1;
+          if (_document.lines[middle].at <= position) {
+            index = middle;
+            low = middle + 1;
+          } else {
+            high = middle - 1;
+          }
+        }
+        if (index >= 0) current = _document.lines[index].text;
+        if (index + 1 < _document.lines.length) {
+          next = _document.lines[index + 1].text;
+        }
+      }
+      if ((current == null || current.isEmpty) &&
+          (next == null || next.isEmpty)) {
         return const SizedBox(height: 48);
       }
       return SizedBox(
-        height: 48,
+        height: 54,
         child: Center(
-          child: Text(
-            current,
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontSize: 17,
-              height: 1.2,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -.2,
-            ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (current != null && current.isNotEmpty)
+                Text(
+                  current,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    height: 1.2,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -.2,
+                  ),
+                ),
+              if (next != null && next.isNotEmpty)
+                Text(
+                  next,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    height: 1.2,
+                    color: BitwaveColors.muted,
+                    letterSpacing: -.1,
+                  ),
+                ),
+            ],
           ),
         ),
       );
     },
+  );
+
+  Widget _spicyLyricsView(SpicyLyricsResult result, Duration position) {
+    var currentIndex = -1;
+    for (var i = 0; i < result.lines.length; i++) {
+      if (result.lines[i].start <= position) {
+        currentIndex = i;
+      } else {
+        break;
+      }
+    }
+    final current = currentIndex >= 0 ? result.lines[currentIndex] : null;
+    final next = currentIndex + 1 < result.lines.length
+        ? result.lines[currentIndex + 1]
+        : null;
+    Widget lyricLine(SpicyLyricsLine? line, {bool highlight = false}) {
+      if (line == null) return const SizedBox.shrink();
+      final spans = <InlineSpan>[];
+      for (var i = 0; i < line.words.length; i++) {
+        final start = line.words[i].start;
+        var end = line.words[i].end;
+        final text = StringBuffer(line.words[i].text);
+        while (line.words[i].partOfWord && i + 1 < line.words.length) {
+          i++;
+          text.write(line.words[i].text);
+          end = line.words[i].end;
+        }
+        final active = highlight && position >= start && position < end;
+        spans.add(
+          TextSpan(
+            text: '${spans.isEmpty ? '' : ' '}$text',
+            style: TextStyle(
+              color: active ? BitwaveColors.paper : BitwaveColors.muted,
+              fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
+        );
+      }
+      return Text.rich(
+        TextSpan(children: spans),
+        textAlign: TextAlign.center,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 15, height: 1.2, letterSpacing: -.2),
+      );
+    }
+
+    final credits = <Widget>[
+      Text(
+        result.source == 'spicy_lyrics'
+            ? 'Spicy Lyrics'
+            : result.source.replaceAll('_', ' '),
+        style: const TextStyle(color: BitwaveColors.muted, fontSize: 9),
+      ),
+      if (result.source == 'spicy_lyrics' && result.uploader != null)
+        _creditLink('Uploader: ${result.uploader!.name}', result.uploader!.url),
+      if (result.source == 'spicy_lyrics' && result.maker != null)
+        _creditLink('Maker: ${result.maker!.name}', result.maker!.url),
+    ];
+    return SizedBox(
+      height: 68,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          lyricLine(current, highlight: true),
+          lyricLine(next),
+          Wrap(spacing: 7, alignment: WrapAlignment.center, children: credits),
+        ],
+      ),
+    );
+  }
+
+  Widget _creditLink(String label, String? url) => InkWell(
+    onTap: url == null ? null : () => launchUrl(Uri.parse(url)),
+    child: Text(
+      label,
+      style: const TextStyle(
+        color: BitwaveColors.muted,
+        fontSize: 9,
+        decoration: TextDecoration.underline,
+      ),
+    ),
   );
 }
 
@@ -3817,151 +4306,21 @@ class _OutputDeviceLabelState extends State<_OutputDeviceLabel> {
   );
 }
 
-class _NowPlayingArtwork extends StatefulWidget {
-  const _NowPlayingArtwork({
-    super.key,
-    required this.track,
-    required this.animated,
-  });
+class _NowPlayingArtwork extends StatelessWidget {
+  const _NowPlayingArtwork({super.key, required this.track});
+
   final Track track;
-  final bool animated;
-
-  @override
-  State<_NowPlayingArtwork> createState() => _NowPlayingArtworkState();
-}
-
-class _NowPlayingArtworkState extends State<_NowPlayingArtwork>
-    with WidgetsBindingObserver {
-  VideoPlayerController? _controller;
-  bool _videoFailed = false;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _startVideoIfNeeded();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-    if (state == AppLifecycleState.resumed && widget.animated) {
-      controller.play();
-    } else {
-      controller.pause();
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant _NowPlayingArtwork oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.track.id != widget.track.id ||
-        oldWidget.track.motionArtworkUrl != widget.track.motionArtworkUrl ||
-        oldWidget.track.customArtworkPath != widget.track.customArtworkPath ||
-        oldWidget.animated != widget.animated) {
-      _disposeVideo();
-      _videoFailed = false;
-      _startVideoIfNeeded();
-    }
-  }
-
-  Future<void> _startVideoIfNeeded() async {
-    final path = widget.track.motionArtworkPath;
-    final motionUrl = widget.track.motionArtworkUrl;
-    if (!widget.animated || (path == null && motionUrl == null)) {
-      return;
-    }
-    final controller = motionUrl != null
-        ? VideoPlayerController.networkUrl(
-            Uri.parse(motionUrl),
-            videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-          )
-        : VideoPlayerController.file(
-            File(path!),
-            videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-          );
-    _controller = controller;
-    try {
-      await controller.initialize();
-      await controller.setVolume(0);
-      await controller.setLooping(true);
-      if (!mounted || !widget.animated || _controller != controller) return;
-      await controller.play();
-      if (mounted) setState(() {});
-    } catch (error) {
-      debugPrint('Bitwave artwork video could not start: $error');
-      await controller.dispose();
-      if (identical(_controller, controller)) _controller = null;
-      if (mounted) setState(() => _videoFailed = true);
-    }
-  }
-
-  Future<void> _disposeVideo() async {
-    final controller = _controller;
-    _controller = null;
-    await controller?.dispose();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _disposeVideo();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
-    final controller = _controller;
-    final motionPath = widget.track.motionArtworkPath;
-    if (widget.animated &&
-        controller != null &&
-        controller.value.isInitialized) {
-      return FittedBox(
-        fit: _fit,
-        alignment: _alignment,
-        clipBehavior: Clip.hardEdge,
-        child: SizedBox(
-          width: controller.value.size.width,
-          height: controller.value.size.height,
-          child: VideoPlayer(controller),
-        ),
-      );
-    }
-    if (widget.animated &&
-        !_videoFailed &&
-        motionPath != null &&
-        const {'.gif', '.webp'}.contains(
-          motionPath.toLowerCase().substring(motionPath.lastIndexOf('.')),
-        )) {
-      return TickerMode(
-        enabled: widget.animated,
-        child: Image.file(
-          File(motionPath),
-          fit: _fit,
-          alignment: _alignment,
-          errorBuilder: (_, _, _) => _poster(context),
-        ),
-      );
-    }
-    return _poster(context);
-  }
-
-  BoxFit get _fit =>
-      widget.track.artworkFit == 'fit' ? BoxFit.contain : BoxFit.cover;
-  Alignment get _alignment =>
-      Alignment(widget.track.artworkFocusX, widget.track.artworkFocusY);
-
-  Widget _poster(BuildContext context) {
-    final track = widget.track;
-    if (track.customArtworkPath != null) {
-      final path = track.animatedArtwork
-          ? track.artworkPosterPath ?? track.customArtworkPath!
-          : track.customArtworkPath!;
+    final fit = track.artworkFit == 'fit' ? BoxFit.contain : BoxFit.cover;
+    final alignment = Alignment(track.artworkFocusX, track.artworkFocusY);
+    final path = track.artworkPath;
+    if (path != null) {
       return Image.file(
         File(path),
-        fit: _fit,
-        alignment: _alignment,
+        fit: fit,
+        alignment: alignment,
         errorBuilder: (_, _, _) => _fallback(),
       );
     }
@@ -3972,13 +4331,6 @@ class _NowPlayingArtworkState extends State<_NowPlayingArtwork>
         errorBuilder: (_, _, _) => _localOrFallback(),
       );
     }
-    if (track.embeddedArtworkPath != null) {
-      return Image.file(
-        File(track.embeddedArtworkPath!),
-        fit: BoxFit.cover,
-        errorBuilder: (_, _, _) => _fallback(),
-      );
-    }
     if (track.artwork != null) {
       return Image.memory(track.artwork!, fit: BoxFit.cover);
     }
@@ -3986,7 +4338,7 @@ class _NowPlayingArtworkState extends State<_NowPlayingArtwork>
   }
 
   Widget _localOrFallback() {
-    final path = widget.track.embeddedArtworkPath;
+    final path = track.embeddedArtworkPath;
     return path == null
         ? _fallback()
         : Image.file(

@@ -1,15 +1,8 @@
 class ArtworkAsset {
-  const ArtworkAsset({
-    required this.path,
-    required this.aspectRatio,
-    this.animated = false,
-    this.posterPath,
-  });
+  const ArtworkAsset({required this.path, required this.aspectRatio});
 
   final String path;
   final double aspectRatio;
-  final bool animated;
-  final String? posterPath;
 }
 
 class AppleArtworkMatch {

@@ -12,6 +12,7 @@ import '../../artwork/domain/artwork_asset.dart';
 import '../../artwork/presentation/artwork_editor_sheet.dart';
 import '../../player/data/bitwave_audio_handler.dart';
 import '../../lyrics/data/lrclib_provider.dart';
+import '../../lyrics/data/spicy_lyrics_provider.dart';
 import '../data/library_repository.dart';
 import '../domain/track.dart';
 
@@ -39,12 +40,14 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
   static const _storage = FlutterSecureStorage();
   final _provider = AppleMusicArtworkProvider();
   final _lyricsProvider = LrclibProvider();
+  final _spicyLyricsProvider = SpicyLyricsProvider();
   late Track _track;
   late final Map<String, TextEditingController> _fields;
   List<AppleArtworkMatch> _matches = [];
   bool _saving = false;
   bool _searching = false;
   bool _searchingLyrics = false;
+  bool _fetchingSpicyLyrics = false;
   List<LyricsMatch> _lyricsMatches = [];
   String? _lyricsError;
   String? _providerError;
@@ -70,6 +73,7 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
     }
     _provider.dispose();
     _lyricsProvider.dispose();
+    _spicyLyricsProvider.dispose();
     super.dispose();
   }
 
@@ -235,6 +239,99 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
     if (mounted) _message('Lyrics saved for offline playback.');
   }
 
+  Future<void> _fetchSpicyLyrics() async {
+    final apiKey = (await _storage.read(key: 'spicy_lyrics_api_key'))?.trim();
+    if (!mounted) return;
+    if (apiKey == null || apiKey.isEmpty) {
+      _message('Add a Spicy Lyrics API key in Settings → Spicy Lyrics first.');
+      return;
+    }
+    var spotifyTrackId = _track.spicyTrackId;
+    if (spotifyTrackId == null || spotifyTrackId.isEmpty) {
+      final input = TextEditingController();
+      final value = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Spotify track link'),
+          content: TextField(
+            controller: input,
+            autofocus: true,
+            autocorrect: false,
+            decoration: const InputDecoration(
+              hintText: 'Paste a Spotify track URL or ID',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, input.text.trim()),
+              child: const Text('Fetch'),
+            ),
+          ],
+        ),
+      );
+      input.dispose();
+      if (value == null) return;
+      final match = RegExp(r'([A-Za-z0-9]{22})').firstMatch(value);
+      spotifyTrackId = match?.group(1);
+      if (spotifyTrackId == null) {
+        _message('That does not look like a Spotify track link or ID.');
+        return;
+      }
+    }
+    setState(() {
+      _fetchingSpicyLyrics = true;
+      _lyricsError = null;
+    });
+    try {
+      final result = await _spicyLyricsProvider.fetch(
+        spotifyTrackId: spotifyTrackId,
+        apiKey: apiKey,
+      );
+      await widget.library.database.updateSpicyTrackId(
+        id: _track.id,
+        spotifyTrackId: spotifyTrackId,
+      );
+      await widget.library.database.updateLyrics(
+        id: _track.id,
+        lyrics: result.encode(),
+      );
+      await _reload();
+      if (mounted) _message('Word-synced lyrics saved for offline playback.');
+    } catch (error) {
+      if (mounted) setState(() => _lyricsError = error.toString());
+    } finally {
+      if (mounted) setState(() => _fetchingSpicyLyrics = false);
+    }
+  }
+
+  String _lyricsDisplayText(String lyrics) {
+    const prefix = 'BITWAVE_SPICY_LYRICS:';
+    if (!lyrics.startsWith(prefix)) return lyrics.trim();
+    try {
+      final result = SpicyLyricsResult.fromJson(lyrics);
+      return result.lines
+          .map((line) {
+            final output = StringBuffer();
+            for (var i = 0; i < line.words.length; i++) {
+              output.write(line.words[i].text);
+              while (line.words[i].partOfWord && i + 1 < line.words.length) {
+                i++;
+                output.write(line.words[i].text);
+              }
+              if (i + 1 < line.words.length) output.write(' ');
+            }
+            return output.toString();
+          })
+          .join('\n');
+    } catch (_) {
+      return 'Word-synced lyrics are saved.';
+    }
+  }
+
   Future<void> _clearLyrics() async {
     await widget.library.database.updateLyrics(id: _track.id, lyrics: null);
     await _reload();
@@ -308,6 +405,17 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
                   : const Icon(Icons.search, size: 18),
               label: const Text('LRCLIB'),
             ),
+            TextButton.icon(
+              onPressed: _fetchingSpicyLyrics ? null : _fetchSpicyLyrics,
+              icon: _fetchingSpicyLyrics
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.lyrics_rounded, size: 17),
+              label: const Text('Word-sync'),
+            ),
           ],
         ),
         if ((_track.lyrics ?? '').trim().isNotEmpty)
@@ -316,7 +424,7 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
               Padding(
                 padding: const EdgeInsets.all(15),
                 child: Text(
-                  _track.lyrics!.trim(),
+                  _lyricsDisplayText(_track.lyrics!),
                   maxLines: 7,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
