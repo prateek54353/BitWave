@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:crypto/crypto.dart';
@@ -26,6 +27,69 @@ class LibraryRepository {
   ];
 
   Future<List<Track>> load() => database.allTracks();
+
+  Future<Directory> iosLocalFilesDirectory() async {
+    final documents = await getApplicationDocumentsDirectory();
+    final folder = Directory(p.join(documents.path, 'Local Files'));
+    await folder.create(recursive: true);
+    return folder;
+  }
+
+  /// Synchronizes the user-visible iOS Files folder with the local index.
+  /// File contents stay in Documents so Files and Bitwave share the same copy.
+  Future<int> syncIOSLocalFiles({String? changedPath}) async {
+    if (!Platform.isIOS) return 0;
+    final folder = await iosLocalFilesDirectory();
+    final root = p.normalize(folder.absolute.path);
+    final changedPathKey = changedPath == null
+        ? null
+        : p.normalize(p.absolute(changedPath));
+    final indexed = await database.allTracks();
+    final indexedInFolder = indexed
+        .where((track) => p.isWithin(root, p.normalize(track.path)))
+        .toList(growable: false);
+    final knownByPath = {
+      for (final track in indexedInFolder) track.path: track,
+    };
+    final activePaths = <String>{};
+    final changedFiles = <(String, String)>[];
+
+    await for (final entity in folder.list(
+      recursive: true,
+      followLinks: false,
+    )) {
+      if (entity is! File ||
+          !_extensions.contains(
+            p.extension(entity.path).replaceFirst('.', '').toLowerCase(),
+          )) {
+        continue;
+      }
+      final path = p.normalize(entity.absolute.path);
+      activePaths.add(path);
+      final stat = await entity.stat();
+      final old = knownByPath[path];
+      if (old == null ||
+          path == changedPathKey ||
+          old.fileSize != stat.size ||
+          old.modifiedMs != stat.modified.millisecondsSinceEpoch) {
+        changedFiles.add((path, p.basename(path)));
+      }
+    }
+
+    if (changedFiles.isNotEmpty) {
+      await _importPaths(
+        changedFiles,
+        copyIntoLibrary: false,
+        pathBasedIds: true,
+      );
+    }
+    final removed = indexedInFolder
+        .where((track) => !activePaths.contains(p.normalize(track.path)))
+        .map((track) => track.id)
+        .toList(growable: false);
+    if (removed.isNotEmpty) await database.deleteTracks(removed);
+    return changedFiles.length + removed.length;
+  }
 
   Future<List<Track>> importAudio() async {
     final result = await FilePicker.pickFiles(
@@ -75,6 +139,8 @@ class LibraryRepository {
   Future<List<Track>> _importPaths(
     List<(String path, String name)> sources, {
     bool removeSources = false,
+    bool copyIntoLibrary = true,
+    bool pathBasedIds = false,
   }) async {
     if (sources.isEmpty) return const [];
     final support = await getApplicationSupportDirectory();
@@ -84,16 +150,24 @@ class LibraryRepository {
     for (final (sourcePath, name) in sources) {
       final source = File(sourcePath);
       try {
-        final destination = p.join(
-          musicDir.path,
-          'import-${DateTime.now().microsecondsSinceEpoch}-${name.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_')}',
-        );
-        final file = File(destination);
-        await source.copy(destination);
+        final existing = pathBasedIds
+            ? await database.trackAtPath(source.absolute.path)
+            : null;
+        final destination = copyIntoLibrary
+            ? p.join(
+                musicDir.path,
+                'import-${DateTime.now().microsecondsSinceEpoch}-${name.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_')}',
+              )
+            : source.path;
+        final file = copyIntoLibrary ? File(destination) : source;
+        if (copyIntoLibrary) await source.copy(destination);
         if (removeSources) await source.delete();
-        final hash = await sha256.bind(file.openRead()).first;
-        final stableId = hash.toString();
-        if (await database.containsTrack(stableId)) {
+        final stableId = pathBasedIds
+            ? sha256
+                  .convert(utf8.encode(p.normalize(source.absolute.path)))
+                  .toString()
+            : (await sha256.bind(file.openRead()).first).toString();
+        if (!pathBasedIds && await database.containsTrack(stableId)) {
           await file.delete();
           continue;
         }
@@ -137,11 +211,23 @@ class LibraryRepository {
           modifiedMs: stat.modified.millisecondsSinceEpoch,
           year: meta?.year?.year,
           trackNumber: meta?.trackNumber,
+          discNumber: meta?.discNumber ?? existing?.discNumber,
           sampleRate: meta?.sampleRate,
           bitrate: meta?.bitrate,
           artwork: embedded,
           embeddedArtworkPath: embeddedPath,
-          lyrics: _nonEmpty(meta?.lyrics),
+          favorite: existing?.favorite ?? false,
+          customArtworkPath: existing?.customArtworkPath,
+          providerArtworkUrl: existing?.providerArtworkUrl,
+          providerArtworkId: existing?.providerArtworkId,
+          artworkAspectRatio: existing?.artworkAspectRatio,
+          artworkFocusX: existing?.artworkFocusX ?? 0,
+          artworkFocusY: existing?.artworkFocusY ?? 0,
+          artworkFit: existing?.artworkFit ?? 'crop',
+          animatedArtwork: existing?.animatedArtwork ?? false,
+          artworkPosterPath: existing?.artworkPosterPath,
+          lyrics: existing?.lyrics ?? _nonEmpty(meta?.lyrics),
+          motionArtworkUrl: existing?.motionArtworkUrl,
         );
         await database.upsert(track);
         imported.add(track);

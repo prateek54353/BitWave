@@ -17,6 +17,7 @@ void main() {
       modifiedMs: 1700000000000,
       year: 2024,
       trackNumber: 3,
+      discNumber: 2,
       sampleRate: 96000,
       bitrate: 1200,
       favorite: true,
@@ -32,6 +33,8 @@ void main() {
     expect(restored.albumArtist, original.albumArtist);
     expect(restored.genre, original.genre);
     expect(restored.duration, original.duration);
+    expect(restored.trackNumber, 3);
+    expect(restored.discNumber, 2);
     expect(restored.sampleRate, original.sampleRate);
     expect(restored.bitrateKbps, 1200);
     expect(restored.favorite, isTrue);

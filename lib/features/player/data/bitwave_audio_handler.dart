@@ -154,21 +154,28 @@ class BitwaveAudioHandler extends BaseAudioHandler
   void _publishIosAnimatedArtwork(Track track) {
     if (!Platform.isIOS) return;
     final videoPath = track.motionArtworkPath;
+    final videoUrl = track.motionArtworkUrl;
     final posterPath = track.artworkPosterPath;
     final extension = videoPath?.toLowerCase().split('.').last;
-    if (videoPath == null ||
-        posterPath == null ||
-        !const {'mp4', 'mov', 'm4v'}.contains(extension)) {
+    final localVideoSupported =
+        videoPath != null && const {'mp4', 'mov', 'm4v'}.contains(extension);
+    if (!localVideoSupported && videoUrl == null) {
       _iosArtworkChannel
           .invokeMethod<void>('clearAnimatedArtwork')
           .catchError((Object _) {});
       return;
     }
+    final previewPath =
+        posterPath ?? track.embeddedArtworkPath ?? track.customArtworkPath;
     _iosArtworkChannel
         .invokeMethod<void>('setAnimatedArtwork', {
-          'artworkId': '${track.id}:${track.modifiedMs}:$videoPath',
-          'videoPath': videoPath,
-          'posterPath': posterPath,
+          'artworkId':
+              '${track.id}:${track.modifiedMs}:${videoUrl ?? videoPath}',
+          if (localVideoSupported) 'videoPath': videoPath,
+          if (!localVideoSupported) 'videoUrl': videoUrl,
+          if (previewPath != null) 'posterPath': previewPath,
+          if (track.providerArtworkUrl != null)
+            'posterUrl': track.providerArtworkUrl,
           'aspectRatio': track.artworkAspectRatio ?? 1.0,
         })
         .catchError((Object _) {

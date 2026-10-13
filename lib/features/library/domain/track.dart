@@ -15,6 +15,7 @@ class Track {
     this.genre = '',
     this.year,
     this.trackNumber,
+    this.discNumber,
     this.sampleRate,
     this.bitrate,
     this.artwork,
@@ -36,7 +37,7 @@ class Track {
   final String id, path, title, artist, album, format;
   final String albumArtist, genre;
   final int durationMs, fileSize, modifiedMs;
-  final int? year, trackNumber, sampleRate, bitrate;
+  final int? year, trackNumber, discNumber, sampleRate, bitrate;
   final Uint8List? artwork;
   final String? embeddedArtworkPath;
   final String? customArtworkPath;
@@ -87,6 +88,7 @@ class Track {
     'modified_ms': modifiedMs,
     'year': year,
     'track_number': trackNumber,
+    'disc_number': discNumber,
     'sample_rate': sampleRate,
     'bitrate': bitrate,
     'artwork': artwork,
@@ -119,6 +121,7 @@ class Track {
     modifiedMs: m['modified_ms'] as int,
     year: m['year'] as int?,
     trackNumber: m['track_number'] as int?,
+    discNumber: m['disc_number'] as int?,
     sampleRate: m['sample_rate'] as int?,
     bitrate: m['bitrate'] as int?,
     artwork: m['artwork'] as Uint8List?,

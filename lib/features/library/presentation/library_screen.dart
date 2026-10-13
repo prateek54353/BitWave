@@ -15,6 +15,7 @@ import '../../player/data/bitwave_audio_handler.dart';
 import '../../artwork/data/artwork_repository.dart';
 import '../../artwork/presentation/artwork_editor_sheet.dart';
 import '../../lyrics/domain/lrc_document.dart';
+import '../../playlists/domain/playlist.dart';
 import 'track_details_page.dart';
 
 enum LibrarySection {
@@ -24,6 +25,7 @@ enum LibrarySection {
   songs,
   genres,
   favorites,
+  playlists,
   queue,
   settings,
 }
@@ -37,19 +39,31 @@ class LibraryScreen extends StatefulWidget {
   State<LibraryScreen> createState() => _LibraryScreenState();
 }
 
-class _LibraryScreenState extends State<LibraryScreen> {
+class _LibraryScreenState extends State<LibraryScreen>
+    with WidgetsBindingObserver {
   final PageController _canvasController = PageController(initialPage: 1);
   final PageController _deckController = PageController();
   final ScrollController _categoryController = ScrollController();
+  StreamSubscription<FileSystemEvent>? _iosFolderSubscription;
   int _activeCategoryIndex = 0;
-  bool _syncingRibbonFromPager = false;
+  int _activeDeckItemIndex = 0;
+  double _paneDragStartPage = 1;
+  double _paneDragDelta = 0;
   List<Track> _tracks = [];
   LibrarySection _section = LibrarySection.library;
   bool _grid = true;
   bool _searching = false;
   bool _scanning = false;
   String _query = '';
+  String? _selectedArtist;
+  String? _selectedPlaylistId;
+  List<Playlist> _playlists = [];
+  List<Track> _selectedPlaylistTracks = [];
+  List<Track>? _albumDetailTracks;
   Timer? _sleepTimer;
+  Timer? _iosFolderRescanTimer;
+  bool _syncingIOSFolder = false;
+  bool _iosFolderRescanPending = false;
   DateTime? _sleepDeadline;
   String _artworkStyle = 'automatic';
   bool _animatedArtworkEnabled = true;
@@ -61,19 +75,80 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _categoryController.addListener(_onCategoryRibbonScroll);
     _refresh();
+    _startIOSFolderMonitoring();
   }
 
   @override
   void dispose() {
     _sleepTimer?.cancel();
+    _iosFolderRescanTimer?.cancel();
+    _iosFolderSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _canvasController.dispose();
     _deckController.dispose();
     _categoryController
       ..removeListener(_onCategoryRibbonScroll)
       ..dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _syncIOSLocalFolder();
+  }
+
+  Future<void> _startIOSFolderMonitoring() async {
+    if (!Platform.isIOS) return;
+    try {
+      final folder = await widget.library.iosLocalFilesDirectory();
+      await _syncIOSLocalFolder();
+      _iosFolderSubscription = folder
+          .watch(events: FileSystemEvent.all, recursive: true)
+          .listen(
+            (event) {
+              _iosFolderRescanTimer?.cancel();
+              _iosFolderRescanTimer = Timer(
+                const Duration(milliseconds: 700),
+                () => _syncIOSLocalFolder(
+                  changedPath: event.type == FileSystemEvent.modify
+                      ? event.path
+                      : null,
+                ),
+              );
+            },
+            onError: (Object error) =>
+                debugPrint('Bitwave local folder watcher unavailable: $error'),
+          );
+    } catch (error) {
+      debugPrint('Bitwave local folder setup failed: $error');
+    }
+  }
+
+  Future<void> _syncIOSLocalFolder({String? changedPath}) async {
+    if (!Platform.isIOS) return;
+    if (_syncingIOSFolder) {
+      _iosFolderRescanPending = true;
+      return;
+    }
+    _syncingIOSFolder = true;
+    try {
+      var nextChangedPath = changedPath;
+      do {
+        _iosFolderRescanPending = false;
+        final changes = await widget.library.syncIOSLocalFiles(
+          changedPath: nextChangedPath,
+        );
+        if (changes > 0 && mounted) await _refresh();
+        nextChangedPath = null;
+      } while (_iosFolderRescanPending && mounted);
+    } catch (error) {
+      debugPrint('Bitwave local folder rescan failed: $error');
+    } finally {
+      _syncingIOSFolder = false;
+    }
   }
 
   void _openPlayer() {
@@ -100,51 +175,103 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  void _beginPaneEdgeDrag() {
+    _paneDragStartPage = _canvasController.hasClients
+        ? (_canvasController.page ?? 1)
+        : 1;
+    _paneDragDelta = 0;
+  }
+
+  void _updatePaneEdgeDrag(double delta, double viewportWidth) {
+    if (!_canvasController.hasClients || viewportWidth <= 0) return;
+    _paneDragDelta += delta;
+    final page = (_paneDragStartPage - _paneDragDelta / viewportWidth).clamp(
+      0.0,
+      2.0,
+    );
+    _canvasController.position.jumpTo(page * viewportWidth);
+  }
+
+  void _endPaneEdgeDrag(double velocity) {
+    if (!_canvasController.hasClients) return;
+    final page = (_canvasController.page ?? 1).clamp(0.0, 2.0);
+    final destination = velocity.abs() > 350
+        ? (velocity < 0 ? page.ceil() : page.floor())
+        : page.round();
+    _canvasController.animateToPage(
+      destination.clamp(0, 2).toInt(),
+      duration: const Duration(milliseconds: 210),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
   void _selectCategory(int index) {
-    if (index < 0 || index > 3) return;
-    setState(() => _activeCategoryIndex = index);
-    if (_deckController.hasClients) {
+    if (index < 0 || index >= _categoryTitles.length) return;
+    _activateCategory(index);
+    _scrollRibbonTo(index);
+  }
+
+  void _activateCategory(int index) {
+    setState(() {
+      _activeCategoryIndex = index;
+      _activeDeckItemIndex = 0;
+      _section = LibrarySection.library;
+      _selectedPlaylistId = null;
+      _selectedPlaylistTracks = [];
+      _albumDetailTracks = null;
+    });
+    if (_deckController.hasClients && _deckController.page?.round() != index) {
       _deckController.animateToPage(
         index,
-        duration: const Duration(milliseconds: 220),
+        duration: const Duration(milliseconds: 240),
         curve: Curves.easeOutCubic,
       );
     }
-    _scrollRibbonTo(index);
+    _openLibrary();
   }
 
   void _scrollRibbonTo(int index) {
     if (!_categoryController.hasClients) return;
-    _syncingRibbonFromPager = true;
-    _categoryController
-        .animateTo(
-          (index * 160.0).clamp(
-            0,
-            _categoryController.position.maxScrollExtent,
-          ),
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOutCubic,
-        )
-        .whenComplete(() => _syncingRibbonFromPager = false);
+    final offset = (index * 160.0).clamp(
+      0.0,
+      _categoryController.position.maxScrollExtent,
+    );
+    _categoryController.animateTo(
+      offset,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   void _onCategoryRibbonScroll() {
-    if (_syncingRibbonFromPager || !_categoryController.hasClients) return;
-    final index = (_categoryController.offset / 160).round().clamp(0, 3);
-    if (index == _activeCategoryIndex) return;
-    setState(() => _activeCategoryIndex = index);
-    if (_deckController.hasClients) _deckController.jumpToPage(index);
+    if (!_categoryController.hasClients) return;
+    final index = (_categoryController.offset / 160).round().clamp(
+      0,
+      _categoryTitles.length - 1,
+    );
+    if (index != _activeCategoryIndex) _activateCategory(index);
   }
 
   void _onDeckPageChanged(int index) {
-    if (index != _activeCategoryIndex) {
-      setState(() => _activeCategoryIndex = index);
-    }
+    if (index < 0 || index >= _categoryTitles.length) return;
+    if (index == _activeCategoryIndex) return;
+    setState(() {
+      _activeCategoryIndex = index;
+      _activeDeckItemIndex = 0;
+      _section = LibrarySection.library;
+      _selectedPlaylistId = null;
+      _selectedPlaylistTracks = [];
+      _albumDetailTracks = null;
+    });
     _scrollRibbonTo(index);
   }
 
   Future<void> _refresh() async {
     final tracks = await widget.library.load();
+    final playlists = await widget.library.database.playlists();
+    final playlistTracks = _selectedPlaylistId == null
+        ? <Track>[]
+        : await widget.library.database.playlistTracks(_selectedPlaylistId!);
     final style = await widget.library.database.getSetting(
       'now_playing_artwork_style',
     );
@@ -154,6 +281,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (mounted) {
       setState(() {
         _tracks = tracks;
+        _playlists = playlists;
+        _selectedPlaylistTracks = playlistTracks;
         _indexLibrary(tracks);
         _artworkStyle = style ?? 'automatic';
         _animatedArtworkEnabled = motion != 'false';
@@ -234,6 +363,21 @@ class _LibraryScreenState extends State<LibraryScreen> {
               _importFolder();
             },
           ),
+          if (Platform.isIOS) ...[
+            const ListTile(
+              leading: Icon(Icons.info_outline_rounded),
+              title: Text('Files  ›  On My iPhone  ›  Bitwave'),
+              subtitle: Text('Add music in the Local Files folder'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.sync_rounded),
+              title: const Text('Rescan Bitwave folder'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _syncIOSLocalFolder();
+              },
+            ),
+          ],
           const SizedBox(height: 8),
         ],
       ),
@@ -293,6 +437,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
     LibrarySection.songs => 'Songs',
     LibrarySection.genres => 'Genres',
     LibrarySection.favorites => 'Favorites',
+    LibrarySection.playlists =>
+      _selectedPlaylistId == null
+          ? 'Playlists'
+          : _playlists
+                    .where((playlist) => playlist.id == _selectedPlaylistId)
+                    .firstOrNull
+                    ?.name ??
+                'Playlists',
     LibrarySection.queue => 'Queue',
     LibrarySection.settings => 'Settings',
   };
@@ -304,8 +456,47 @@ class _LibraryScreenState extends State<LibraryScreen> {
       builder: (context, viewport) => Stack(
         fit: StackFit.expand,
         children: [
+          AnimatedBuilder(
+            animation: _canvasController,
+            builder: (context, _) {
+              final page = _canvasController.hasClients
+                  ? (_canvasController.page ?? 1)
+                  : 1.0;
+              if (page > .5 && page < 1.5) return const SizedBox.shrink();
+              return StreamBuilder<MediaItem?>(
+                stream: widget.audio.mediaItem,
+                builder: (context, snapshot) {
+                  final id = snapshot.data?.id;
+                  final track = id == null
+                      ? null
+                      : widget.audio.tracks
+                            .where((item) => item.id == id)
+                            .firstOrNull;
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (track != null)
+                        Positioned.fill(
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              _AdaptiveArtworkBackdrop(
+                                key: ValueKey('global-backdrop-${track.id}'),
+                                track: track,
+                              ),
+                              const ColoredBox(color: Color(0xA8000000)),
+                            ],
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
           PageView(
             controller: _canvasController,
+            physics: const PageScrollPhysics(parent: BouncingScrollPhysics()),
             children: [
               _libraryPane(),
               LayoutBuilder(
@@ -316,6 +507,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     artworkStyle: _artworkStyle,
                     animatedArtworkEnabled: _animatedArtworkEnabled,
                     onOpenDetails: _openTrackDetails,
+                    onAddToPlaylist: _addTrackToPlaylist,
                     onOpenMenu: _openMenu,
                   ),
                   builder: (context, child) {
@@ -335,7 +527,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           ),
                           child: Transform.scale(
                             alignment: Alignment.centerRight,
-                            scale: 1 - .78 * libraryProgress,
+                            scale: math.max(
+                              46 / constraints.maxWidth,
+                              1 - .9 * libraryProgress,
+                            ),
                             child: Transform.scale(
                               scaleY: 1 - .14 * libraryProgress,
                               child: child,
@@ -358,21 +553,59 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   : 1.0;
               final progress = (1 - page).clamp(0.0, 1.0);
               if (progress < .35) return const SizedBox.shrink();
-              return Positioned(
-                right: 0,
-                top: viewport.maxHeight * .13,
-                bottom: viewport.maxHeight * .13,
-                width: 62,
-                child: Opacity(
-                  opacity: ((progress - .35) / .4).clamp(0.0, 1.0),
-                  child: _NowPlayingPill(
-                    audio: widget.audio,
-                    onTap: _openPlayer,
-                    onSwipe: _openPlayer,
+              return Positioned.fill(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Opacity(
+                    opacity: ((progress - .35) / .4).clamp(0.0, 1.0),
+                    child: _NowPlayingPill(
+                      audio: widget.audio,
+                      onTap: _openPlayer,
+                      onSwipe: _openPlayer,
+                      availableHeight: viewport.maxHeight,
+                    ),
                   ),
                 ),
               );
             },
+          ),
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 24,
+            child: Semantics(
+              label: 'Drag right to show the next pane',
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragStart: (_) => _beginPaneEdgeDrag(),
+                onHorizontalDragUpdate: (details) => _updatePaneEdgeDrag(
+                  details.primaryDelta ?? 0,
+                  viewport.maxWidth,
+                ),
+                onHorizontalDragEnd: (details) =>
+                    _endPaneEdgeDrag(details.primaryVelocity ?? 0),
+              ),
+            ),
+          ),
+          Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            width: 24,
+            child: Semantics(
+              label: 'Drag left to show the next pane',
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragStart: (_) => _beginPaneEdgeDrag(),
+                onHorizontalDragUpdate: (details) => _updatePaneEdgeDrag(
+                  details.primaryDelta ?? 0,
+                  viewport.maxWidth,
+                ),
+                onHorizontalDragEnd: (details) =>
+                    _endPaneEdgeDrag(details.primaryVelocity ?? 0),
+              ),
+            ),
           ),
         ],
       ),
@@ -380,14 +613,27 @@ class _LibraryScreenState extends State<LibraryScreen> {
   );
 
   Widget _libraryPane() {
+    final detailTracks = _albumDetailTracks;
+    if (detailTracks != null) {
+      return _AlbumDetailPage(
+        tracks: detailTracks,
+        audio: widget.audio,
+        onEditArtwork: () => _editArtwork(detailTracks),
+        onAddToPlaylist: () => _addTracksToPlaylist(detailTracks),
+        onBack: () => setState(() => _albumDetailTracks = null),
+      );
+    }
     if (_section == LibrarySection.library) {
       return Scaffold(
-        backgroundColor: const Color(0xFF090A0B),
+        backgroundColor: Colors.transparent,
         body: _libraryDeck(),
       );
     }
     return Scaffold(
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
         toolbarHeight: 64,
         title: _searching
             ? TextField(
@@ -448,35 +694,44 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ? _settingsPage()
           : _section == LibrarySection.queue
           ? _queuePage()
+          : _section == LibrarySection.playlists
+          ? _playlistBrowser()
           : _libraryPage(),
       bottomNavigationBar: _miniPlayer(),
     );
   }
 
   Widget _libraryDeck() {
-    final featured = _deckFeaturedTrack(_activeCategoryIndex);
+    final deckItems = _deckItemsForCategory(_activeCategoryIndex);
+    final featured = deckItems.isEmpty
+        ? null
+        : deckItems[math.min(_activeDeckItemIndex, deckItems.length - 1)];
     return Stack(
       fit: StackFit.expand,
       children: [
         PageView.builder(
           controller: _deckController,
+          scrollDirection: Axis.horizontal,
+          physics: const PageScrollPhysics(parent: BouncingScrollPhysics()),
           itemCount: _categoryTitles.length,
           onPageChanged: _onDeckPageChanged,
-          itemBuilder: (context, index) => _deckCategoryPage(index),
+          itemBuilder: (context, category) => _deckCategoryPage(category),
         ),
         const Positioned.fill(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                stops: [0, .34, .6, 1],
-                colors: [
-                  Color(0x76000000),
-                  Color(0x10000000),
-                  Color(0x61000000),
-                  Color(0xF2090A0B),
-                ],
+          child: IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  stops: [0, .34, .6, 1],
+                  colors: [
+                    Color(0x76000000),
+                    Color(0x10000000),
+                    Color(0x61000000),
+                    Color(0xF2090A0B),
+                  ],
+                ),
               ),
             ),
           ),
@@ -540,11 +795,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 child: Text(
                   _activeCategoryIndex == 0
                       ? '$_filesChangedThisWeek files changed this week'
-                      : '${_categoryCount(_activeCategoryIndex)} ${_activeCategoryIndex == 1
-                            ? 'albums'
-                            : _activeCategoryIndex == 2
-                            ? 'artists'
-                            : 'tracks'}',
+                      : '${_categoryCount(_activeCategoryIndex)} ${_categoryCountLabel(_activeCategoryIndex)}',
                   style: const TextStyle(
                     fontSize: 15,
                     color: Color(0xFFD0CECC),
@@ -558,36 +809,56 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        _featuredTitle(_activeCategoryIndex, featured),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 29,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: -.5,
+                      InkWell(
+                        onTap: () =>
+                            _openDeckItem(_activeCategoryIndex, featured),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Text(
+                            _featuredTitle(_activeCategoryIndex, featured),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 29,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: -.5,
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 5),
-                      Text(
-                        _featuredSubtitle(_activeCategoryIndex, featured),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 17),
+                      InkWell(
+                        onTap: () =>
+                            _openDeckItem(_activeCategoryIndex, featured),
+                        child: Text(
+                          _featuredSubtitle(_activeCategoryIndex, featured),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 17),
+                        ),
                       ),
                     ],
                   ),
                 ),
-              if (featured == null)
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(28, 0, 32, 20),
+              if (featured == null && _activeCategoryIndex != 6)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(28, 0, 32, 20),
                   child: Text(
-                    'Your local music will appear here after you import audio.',
-                    style: TextStyle(fontSize: 16, color: Color(0xFFD0CECC)),
+                    _activeCategoryIndex == 5
+                        ? 'Folders containing your imported music will appear here.'
+                        : 'Your local music will appear here after you import audio.',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      color: Color(0xFFD0CECC),
+                    ),
                   ),
                 ),
-              _librarySourceCard(_libraryBytes),
-              const SizedBox(height: 12),
+              if (_activeCategoryIndex == 6)
+                SafeArea(top: false, child: _categoryRibbon())
+              else ...[
+                _librarySourceCard(_libraryBytes),
+                const SizedBox(height: 12),
+              ],
             ],
           ),
         ),
@@ -640,30 +911,76 @@ class _LibraryScreenState extends State<LibraryScreen> {
     ),
   );
 
-  Track? _deckFeaturedTrack(int category) {
-    if (_tracks.isEmpty) return null;
+  List<Track> _deckItemsForCategory(int category) {
     final tracks = List<Track>.of(_visibleTracks);
-    if (tracks.isEmpty) return null;
     if (category == 0) {
       tracks.sort((a, b) => b.modifiedMs.compareTo(a.modifiedMs));
-      return tracks.first;
+      return tracks;
     }
     if (category == 1) {
-      final seen = <String>{};
-      return tracks
-          .where((t) => seen.add('${t.displayAlbum}\u0000${t.albumArtist}'))
-          .firstOrNull;
+      final visibleIds = tracks.map((track) => track.id).toSet();
+      final albums = _albumIndex.values
+          .map((albumTracks) => albumTracks.first)
+          .where((track) => visibleIds.contains(track.id))
+          .toList();
+      albums.sort(
+        (a, b) => a.displayAlbum.toLowerCase().compareTo(
+          b.displayAlbum.toLowerCase(),
+        ),
+      );
+      return albums;
     }
     if (category == 2) {
-      final seen = <String>{};
-      return tracks.where((t) => seen.add(t.displayArtist)).firstOrNull;
+      final visibleIds = tracks.map((track) => track.id).toSet();
+      final artists = _artistIndex.values
+          .map((artistTracks) => artistTracks.first)
+          .where((track) => visibleIds.contains(track.id))
+          .toList();
+      artists.sort(
+        (a, b) => a.displayArtist.toLowerCase().compareTo(
+          b.displayArtist.toLowerCase(),
+        ),
+      );
+      return artists;
     }
-    return tracks.first;
+    if (category == 4) {
+      final genres = <String, Track>{};
+      for (final track in tracks) {
+        genres.putIfAbsent(
+          track.genre.isEmpty ? 'Uncategorized' : track.genre,
+          () => track,
+        );
+      }
+      return genres.values.toList()..sort(
+        (a, b) => a.genre.toLowerCase().compareTo(b.genre.toLowerCase()),
+      );
+    }
+    if (category == 5) {
+      final folders = <String, Track>{};
+      for (final track in tracks) {
+        folders.putIfAbsent(File(track.path).parent.path, () => track);
+      }
+      final folderTracks = folders.values.toList();
+      folderTracks.sort(
+        (a, b) =>
+            _folderName(a)
+                .toLowerCase()
+                .compareTo(_folderName(b).toLowerCase()),
+      );
+      return folderTracks;
+    }
+    if (category == 6) return const [];
+    tracks.sort(
+      (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+    );
+    return tracks;
   }
 
   String _featuredTitle(int category, Track track) => switch (category) {
     1 => track.displayAlbum,
     2 => track.displayArtist,
+    4 => track.genre.isEmpty ? 'Uncategorized' : track.genre,
+    5 => _folderName(track),
     _ => track.title,
   };
 
@@ -671,6 +988,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     1 => track.albumArtist.isEmpty ? track.displayArtist : track.albumArtist,
     2 =>
       '${_tracks.where((t) => t.displayArtist == track.displayArtist).length} tracks',
+    4 => '${_tracks.where((t) => t.genre == track.genre).length} tracks',
+    5 =>
+      '${_tracks.where((t) => File(t.path).parent.path == File(track.path).parent.path).length} tracks',
     _ => track.displayArtist,
   };
 
@@ -678,8 +998,33 @@ class _LibraryScreenState extends State<LibraryScreen> {
     0 || 3 => _visibleTracks.length,
     1 => _albumIndex.length,
     2 => _artistIndex.length,
+    4 =>
+      _tracks
+          .map((track) => track.genre.isEmpty ? 'Uncategorized' : track.genre)
+          .toSet()
+          .length,
+    5 => _tracks.map((track) => File(track.path).parent.path).toSet().length,
+    6 => _playlists.length,
     _ => 0,
   };
+
+  String _categoryCountLabel(int category) => switch (category) {
+    1 => 'albums',
+    2 => 'artists',
+    4 => 'genres',
+    5 => 'folders',
+    6 => 'playlists',
+    _ => 'tracks',
+  };
+
+  String _folderName(Track track) {
+    final path = File(track.path).parent.path;
+    return path
+            .split(Platform.pathSeparator)
+            .where((part) => part.isNotEmpty)
+            .lastOrNull ??
+        path;
+  }
 
   static String _formatStorage(int bytes) {
     if (bytes >= 1024 * 1024 * 1024) {
@@ -697,6 +1042,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     'Albums',
     'Artists',
     'Songs',
+    'Genres',
+    'Folders',
+    'Playlists',
   ];
 
   Widget _categoryRibbon() => LayoutBuilder(
@@ -766,31 +1114,91 @@ class _LibraryScreenState extends State<LibraryScreen> {
   );
 
   Widget _deckCategoryPage(int category) {
-    final track = _deckFeaturedTrack(category);
-    if (track == null) return const ColoredBox(color: Color(0xFF090A0B));
+    if (category == 6) return _playlistDeckPage();
+    final items = _deckItemsForCategory(category);
+    if (items.isEmpty) return const SizedBox.expand();
+    final itemIndex = _activeCategoryIndex == category
+        ? _activeDeckItemIndex.clamp(0, items.length - 1)
+        : 0;
+    final track = items[itemIndex];
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () {
-        if (category == 1) {
-          final albumTracks = _tracks
-              .where((t) => t.displayAlbum == track.displayAlbum)
-              .toList();
-          _openAlbum(albumTracks);
-        } else if (category == 2) {
-          final artistTracks = _tracks
-              .where((t) => t.displayArtist == track.displayArtist)
-              .toList();
-          _showTrackSheet(track.displayArtist, artistTracks);
-        } else {
-          widget.audio.playTracks(
-            _visibleTracks,
-            initialIndex: _visibleTracks.indexOf(track),
-          );
-          _openPlayer();
-        }
+      onTap: () => _openDeckItem(category, track),
+      onVerticalDragEnd: (details) {
+        final velocity = details.primaryVelocity ?? 0;
+        if (velocity.abs() < 280) return;
+        setState(() {
+          _activeDeckItemIndex = velocity < 0
+              ? (itemIndex + 1).clamp(0, items.length - 1)
+              : (itemIndex - 1).clamp(0, items.length - 1);
+        });
       },
       child: _NowPlayingArtwork(track: track, animated: false),
     );
+  }
+
+  Widget _playlistDeckPage() => ListView(
+    padding: const EdgeInsets.fromLTRB(20, 150, 20, 320),
+    children: [
+      if (_playlists.isEmpty)
+        ListTile(
+          leading: const Icon(Icons.playlist_add_rounded),
+          title: const Text('Create your first playlist'),
+          onTap: _createPlaylist,
+        ),
+      ..._playlists.map(
+        (playlist) => ListTile(
+          leading: const Icon(Icons.queue_music_rounded),
+          title: Text(playlist.name, maxLines: 1),
+          subtitle: Text(
+            '${playlist.trackCount} ${playlist.trackCount == 1 ? 'track' : 'tracks'}',
+            style: const TextStyle(color: BitwaveColors.muted),
+          ),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => _openPlaylist(playlist),
+        ),
+      ),
+      ListTile(
+        leading: const Icon(Icons.add_rounded),
+        title: const Text('New playlist'),
+        onTap: _createPlaylist,
+      ),
+    ],
+  );
+
+  void _openDeckItem(int category, Track track) {
+    if (category == 1) {
+      final albumArtist = track.albumArtist.isEmpty
+          ? track.displayArtist
+          : track.albumArtist;
+      final albumTracks = _tracks.where((candidate) {
+        final candidateArtist = candidate.albumArtist.isEmpty
+            ? candidate.displayArtist
+            : candidate.albumArtist;
+        return candidate.displayAlbum == track.displayAlbum &&
+            candidateArtist == albumArtist;
+      }).toList();
+      if (albumTracks.isNotEmpty) _openAlbum(albumTracks);
+    } else if (category == 2) {
+      _openArtist(track.displayArtist);
+    } else if (category == 4) {
+      final genre = track.genre.isEmpty ? 'Uncategorized' : track.genre;
+      final genreTracks = _tracks
+          .where((candidate) => candidate.genre == track.genre)
+          .toList();
+      _showTrackSheet(genre, genreTracks);
+    } else if (category == 5) {
+      final folder = File(track.path).parent.path;
+      final folderTracks = _tracks
+          .where((candidate) => File(candidate.path).parent.path == folder)
+          .toList();
+      _showTrackSheet(_folderName(track), folderTracks);
+    } else {
+      final tracks = _visibleTracks;
+      final index = tracks.indexOf(track);
+      if (index >= 0) widget.audio.playTracks(tracks, initialIndex: index);
+      _openPlayer();
+    }
   }
 
   Widget _libraryPage() {
@@ -820,22 +1228,38 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     color: BitwaveColors.muted,
                   ),
                 ),
-              PopupMenuButton<String>(
-                tooltip: 'Sort library',
-                icon: const Icon(
-                  Icons.sort_rounded,
-                  color: BitwaveColors.muted,
-                ),
-                onSelected: (_) => setState(
-                  () => _tracks.sort(
-                    (a, b) =>
-                        a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+              if (_section == LibrarySection.playlists)
+                IconButton(
+                  tooltip: _selectedPlaylistId == null
+                      ? 'Create playlist'
+                      : 'Add tracks to playlist',
+                  onPressed: _selectedPlaylistId == null
+                      ? _createPlaylist
+                      : _chooseTracksForPlaylist,
+                  icon: Icon(
+                    _selectedPlaylistId == null
+                        ? Icons.playlist_add_rounded
+                        : Icons.add_rounded,
                   ),
+                )
+              else
+                PopupMenuButton<String>(
+                  tooltip: 'Sort library',
+                  icon: const Icon(
+                    Icons.sort_rounded,
+                    color: BitwaveColors.muted,
+                  ),
+                  onSelected: (_) => setState(
+                    () => _tracks.sort(
+                      (a, b) => a.title.toLowerCase().compareTo(
+                        b.title.toLowerCase(),
+                      ),
+                    ),
+                  ),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'title', child: Text('Title A–Z')),
+                  ],
                 ),
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'title', child: Text('Title A–Z')),
-                ],
-              ),
             ],
           ),
         ),
@@ -894,8 +1318,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
             style: TextStyle(fontSize: 21, fontWeight: FontWeight.w500),
           ),
           const SizedBox(height: 8),
-          const Text(
-            'Import audio files from your device. Bitwave keeps a private copy and indexes their tags for offline listening.',
+          Text(
+            Platform.isIOS
+                ? 'Add music in Files → On My iPhone → Bitwave → Local Files, or import audio here. Bitwave keeps that folder in sync for offline listening.'
+                : 'Import audio files from your device. Bitwave keeps a private copy and indexes their tags for offline listening.',
             textAlign: TextAlign.center,
             style: TextStyle(color: BitwaveColors.muted, height: 1.45),
           ),
@@ -916,11 +1342,373 @@ class _LibraryScreenState extends State<LibraryScreen> {
     itemBuilder: (context, index) => _trackRow(tracks[index], index, tracks),
   );
 
+  Widget _playlistBrowser() {
+    final playlistId = _selectedPlaylistId;
+    if (playlistId == null) {
+      return ListView(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        children: [
+          ListTile(
+            leading: const Icon(Icons.add_rounded, color: BitwaveColors.accent),
+            title: const Text('Create playlist'),
+            onTap: _createPlaylist,
+          ),
+          if (_playlists.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(28),
+              child: Text(
+                'Your playlists are stored on this device and work offline.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: BitwaveColors.muted),
+              ),
+            ),
+          ..._playlists.map(
+            (playlist) => ListTile(
+              leading: const CircleAvatar(
+                child: Icon(Icons.queue_music_rounded),
+              ),
+              title: Text(playlist.name),
+              subtitle: Text(
+                '${playlist.trackCount} ${playlist.trackCount == 1 ? 'track' : 'tracks'}',
+                style: const TextStyle(color: BitwaveColors.muted),
+              ),
+              onTap: () => _openPlaylist(playlist),
+              trailing: PopupMenuButton<String>(
+                onSelected: (value) {
+                  if (value == 'rename') _renamePlaylist(playlist);
+                  if (value == 'delete') _deletePlaylist(playlist);
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'rename', child: Text('Rename')),
+                  PopupMenuItem(value: 'delete', child: Text('Delete')),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+    final playlist = _playlists
+        .where((item) => item.id == playlistId)
+        .firstOrNull;
+    if (playlist == null) return const SizedBox.shrink();
+    final tracks = _selectedPlaylistTracks;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'All playlists',
+                onPressed: () => setState(() {
+                  _selectedPlaylistId = null;
+                  _selectedPlaylistTracks = [];
+                }),
+                icon: const Icon(Icons.arrow_back_rounded),
+              ),
+              Expanded(
+                child: Text(
+                  '${tracks.length} ${tracks.length == 1 ? 'track' : 'tracks'}',
+                  style: const TextStyle(color: BitwaveColors.muted),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Play playlist',
+                onPressed: tracks.isEmpty
+                    ? null
+                    : () => widget.audio.playTracks(tracks),
+                icon: const Icon(Icons.play_arrow_rounded),
+              ),
+              IconButton(
+                tooltip: 'Shuffle playlist',
+                onPressed: tracks.isEmpty
+                    ? null
+                    : () => widget.audio.playTracks(List.of(tracks)..shuffle()),
+                icon: const Icon(Icons.shuffle_rounded),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1, color: BitwaveColors.line),
+        Expanded(
+          child: tracks.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('This playlist is empty.'),
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        onPressed: _chooseTracksForPlaylist,
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('Add tracks'),
+                      ),
+                    ],
+                  ),
+                )
+              : ReorderableListView.builder(
+                  itemCount: tracks.length,
+                  onReorder: (from, to) async {
+                    if (to > from) to--;
+                    await widget.library.database.movePlaylistTrack(
+                      playlistId,
+                      from,
+                      to,
+                    );
+                    await _reloadPlaylistState();
+                  },
+                  itemBuilder: (context, index) => KeyedSubtree(
+                    key: ValueKey('playlist-$playlistId-${tracks[index].id}'),
+                    child: _trackRow(
+                      tracks[index],
+                      index,
+                      tracks,
+                      playlistId: playlistId,
+                    ),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _openPlaylist(Playlist playlist) async {
+    final tracks = await widget.library.database.playlistTracks(playlist.id);
+    if (!mounted) return;
+    setState(() {
+      _section = LibrarySection.playlists;
+      _selectedPlaylistId = playlist.id;
+      _selectedPlaylistTracks = tracks;
+    });
+    _openLibrary();
+  }
+
+  Future<void> _renamePlaylist(Playlist playlist) async {
+    final controller = TextEditingController(text: playlist.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rename playlist'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          onSubmitted: (value) => Navigator.pop(dialogContext, value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(dialogContext, controller.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null || name.trim().isEmpty) return;
+    try {
+      await widget.library.database.renamePlaylist(playlist.id, name);
+      await _reloadPlaylistState();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not rename playlist: $error')),
+        );
+      }
+    }
+  }
+
+  Future<void> _deletePlaylist(Playlist playlist) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete ${playlist.name}?'),
+        content: const Text('Tracks in your library will not be deleted.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await widget.library.database.deletePlaylist(playlist.id);
+    if (_selectedPlaylistId == playlist.id) {
+      setState(() {
+        _selectedPlaylistId = null;
+        _selectedPlaylistTracks = [];
+      });
+    }
+    await _reloadPlaylistState();
+  }
+
+  Future<void> _addTrackToPlaylist(Track track) async {
+    if (_playlists.isEmpty) {
+      final id = await _createPlaylist();
+      if (id == null) return;
+      await widget.library.database.addTrackToPlaylist(id, track.id);
+      await _reloadPlaylistState();
+      return;
+    }
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: BitwaveColors.panel,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(title: Text('Add to playlist')),
+            ..._playlists.map(
+              (playlist) => ListTile(
+                leading: const Icon(Icons.queue_music_rounded),
+                title: Text(playlist.name),
+                onTap: () => Navigator.pop(sheetContext, playlist.id),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.add_rounded),
+              title: const Text('Create playlist'),
+              onTap: () => Navigator.pop(sheetContext, '__create__'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final playlistId = selected == '__create__'
+        ? await _createPlaylist()
+        : selected;
+    if (playlistId == null) return;
+    await widget.library.database.addTrackToPlaylist(playlistId, track.id);
+    await _reloadPlaylistState();
+  }
+
+  Future<String?> _createPlaylist() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('New playlist'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(hintText: 'Playlist name'),
+          onSubmitted: (value) => Navigator.pop(dialogContext, value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(dialogContext, controller.text.trim()),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null || name.trim().isEmpty) return null;
+    try {
+      final id = await widget.library.database.createPlaylist(name);
+      await _reloadPlaylistState();
+      return id;
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not create playlist: $error')),
+        );
+      }
+      return null;
+    }
+  }
+
+  Future<void> _chooseTracksForPlaylist() async {
+    final playlistId = _selectedPlaylistId;
+    if (playlistId == null || _tracks.isEmpty) return;
+    final selectedIds = <String>{};
+    final selected = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Add tracks'),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: MediaQuery.sizeOf(context).height * .58,
+            child: ListView.builder(
+              itemCount: _tracks.length,
+              itemBuilder: (_, index) {
+                final track = _tracks[index];
+                final alreadyAdded = _selectedPlaylistTracks.any(
+                  (item) => item.id == track.id,
+                );
+                return CheckboxListTile(
+                  value: alreadyAdded || selectedIds.contains(track.id),
+                  onChanged: alreadyAdded
+                      ? null
+                      : (value) => setDialogState(() {
+                          if (value == true) {
+                            selectedIds.add(track.id);
+                          } else {
+                            selectedIds.remove(track.id);
+                          }
+                        }),
+                  title: Text(track.title, maxLines: 1),
+                  subtitle: Text(track.displayArtist, maxLines: 1),
+                  secondary: _artwork(track, 40),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, selectedIds.toList()),
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (selected == null) return;
+    for (final trackId in selected) {
+      await widget.library.database.addTrackToPlaylist(playlistId, trackId);
+    }
+    await _reloadPlaylistState();
+  }
+
+  Future<void> _reloadPlaylistState() async {
+    final playlists = await widget.library.database.playlists();
+    final tracks = _selectedPlaylistId == null
+        ? <Track>[]
+        : await widget.library.database.playlistTracks(_selectedPlaylistId!);
+    if (!mounted) return;
+    setState(() {
+      _playlists = playlists;
+      _selectedPlaylistTracks = tracks;
+    });
+  }
+
   Widget _trackRow(
     Track track,
     int index,
-    List<Track> contextTracks,
-  ) => ListTile(
+    List<Track> contextTracks, {
+    String? playlistId,
+  }) => ListTile(
     contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 3),
     leading: _artwork(track, 50),
     title: Text(
@@ -954,6 +1742,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
             }
             if (v == 'tags') await _openTrackDetails(track);
             if (v == 'artwork') await _editArtwork([track]);
+            if (v == 'playlist') await _addTrackToPlaylist(track);
+            if (v == 'remove_playlist' && playlistId != null) {
+              await widget.library.database.removeTrackFromPlaylist(
+                playlistId,
+                track.id,
+              );
+              await _reloadPlaylistState();
+            }
             if (v == 'favorite') {
               await widget.library.database.setFavorite(track, !track.favorite);
               await _refresh();
@@ -964,6 +1760,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
             const PopupMenuItem(value: 'next', child: Text('Play next')),
             const PopupMenuItem(value: 'tags', child: Text('View / edit tags')),
             const PopupMenuItem(value: 'artwork', child: Text('Edit artwork')),
+            const PopupMenuItem(
+              value: 'playlist',
+              child: Text('Add to playlist'),
+            ),
+            if (playlistId != null)
+              const PopupMenuItem(
+                value: 'remove_playlist',
+                child: Text('Remove from playlist'),
+              ),
             PopupMenuItem(
               value: 'favorite',
               child: Text(
@@ -1050,6 +1855,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Widget _artistBrowser(List<Track> tracks) {
+    if (_selectedArtist case final selectedArtist?) {
+      final selectedTracks = tracks
+          .where((track) => track.displayArtist == selectedArtist)
+          .toList();
+      return Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.arrow_back_rounded),
+            title: Text(selectedArtist),
+            subtitle: Text('${selectedTracks.length} tracks'),
+            onTap: () => setState(() => _selectedArtist = null),
+          ),
+          const Divider(height: 1, color: BitwaveColors.line),
+          Expanded(child: _songList(selectedTracks)),
+        ],
+      );
+    }
     final artists = <String, List<Track>>{};
     for (final track in tracks) {
       artists.putIfAbsent(track.displayArtist, () => []).add(track);
@@ -1068,10 +1890,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
             '${items.length} tracks',
             style: const TextStyle(color: BitwaveColors.muted),
           ),
-          onTap: () => _showTrackSheet(name, items),
+          onTap: () => setState(() => _selectedArtist = name),
         );
       },
     );
+  }
+
+  void _openArtist(String artist) {
+    setState(() {
+      _section = LibrarySection.artists;
+      _selectedArtist = artist;
+    });
   }
 
   Widget _genreBrowser(List<Track> tracks) {
@@ -1096,8 +1925,73 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  void _openAlbum(List<Track> tracks) =>
-      _showTrackSheet(tracks.first.displayAlbum, tracks);
+  void _openAlbum(List<Track> tracks) {
+    if (tracks.isEmpty) return;
+    setState(() => _albumDetailTracks = _tracksByTrackNumber(tracks));
+  }
+
+  Future<void> _addTracksToPlaylist(List<Track> tracks) async {
+    if (tracks.isEmpty) return;
+    if (_playlists.isEmpty) {
+      final id = await _createPlaylist();
+      if (id == null) return;
+      for (final track in tracks) {
+        await widget.library.database.addTrackToPlaylist(id, track.id);
+      }
+      await _reloadPlaylistState();
+      return;
+    }
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: BitwaveColors.panel,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(title: Text('Add album to playlist')),
+            ..._playlists.map(
+              (playlist) => ListTile(
+                leading: const Icon(Icons.queue_music_rounded),
+                title: Text(playlist.name),
+                onTap: () => Navigator.pop(sheetContext, playlist.id),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.add_rounded),
+              title: const Text('Create playlist'),
+              onTap: () => Navigator.pop(sheetContext, '__create__'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final playlistId = selected == '__create__'
+        ? await _createPlaylist()
+        : selected;
+    if (playlistId == null) return;
+    for (final track in tracks) {
+      await widget.library.database.addTrackToPlaylist(playlistId, track.id);
+    }
+    await _reloadPlaylistState();
+  }
+
+  List<Track> _tracksByTrackNumber(List<Track> tracks) {
+    final sorted = List<Track>.of(tracks);
+    sorted.sort((a, b) {
+      final byDisc = (a.discNumber ?? 1).compareTo(b.discNumber ?? 1);
+      if (byDisc != 0) return byDisc;
+      final aNumber = a.trackNumber;
+      final bNumber = b.trackNumber;
+      if (aNumber == null && bNumber != null) return 1;
+      if (aNumber != null && bNumber == null) return -1;
+      final byNumber = (aNumber ?? 0).compareTo(bNumber ?? 0);
+      return byNumber != 0
+          ? byNumber
+          : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    });
+    return sorted;
+  }
+
   void _showTrackSheet(String title, List<Track> tracks) =>
       showModalBottomSheet<void>(
         context: context,
@@ -1164,8 +2058,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
       );
 
   Widget _menuPane() => Scaffold(
-    backgroundColor: BitwaveColors.panel,
+    backgroundColor: Colors.transparent,
     appBar: AppBar(
+      backgroundColor: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
       leading: IconButton(
         tooltip: 'Return to now playing',
         onPressed: _openPlayer,
@@ -1224,6 +2120,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   Icons.home_outlined,
                   'Library',
                 ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.headphones_rounded,
+                    color: BitwaveColors.muted,
+                  ),
+                  title: const Text('Listening'),
+                  onTap: _openPlayer,
+                ),
+                _navItem(
+                  LibrarySection.playlists,
+                  Icons.queue_music_rounded,
+                  'Playlists',
+                ),
+                const Divider(color: BitwaveColors.line, height: 14),
                 _navItem(LibrarySection.albums, Icons.album_outlined, 'Albums'),
                 _navItem(
                   LibrarySection.artists,
@@ -1256,6 +2166,63 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   'Settings',
                 ),
               ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            child: StreamBuilder<PlaybackState>(
+              stream: widget.audio.playbackState,
+              initialData: widget.audio.playbackState.value,
+              builder: (context, snapshot) {
+                final state = snapshot.data;
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    IconButton(
+                      tooltip: state?.shuffleMode == AudioServiceShuffleMode.all
+                          ? 'Shuffle on'
+                          : 'Shuffle off',
+                      onPressed: widget.audio.toggleShuffle,
+                      icon: Icon(
+                        Icons.shuffle_rounded,
+                        color: state?.shuffleMode == AudioServiceShuffleMode.all
+                            ? BitwaveColors.accent
+                            : BitwaveColors.muted,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: switch (state?.repeatMode) {
+                        AudioServiceRepeatMode.one => 'Repeat one',
+                        AudioServiceRepeatMode.all => 'Repeat all',
+                        _ => 'Repeat off',
+                      },
+                      onPressed: widget.audio.cycleRepeat,
+                      icon: Icon(
+                        state?.repeatMode == AudioServiceRepeatMode.one
+                            ? Icons.repeat_one_rounded
+                            : Icons.repeat_rounded,
+                        color: state?.repeatMode == AudioServiceRepeatMode.none
+                            ? BitwaveColors.muted
+                            : BitwaveColors.accent,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Settings',
+                      onPressed: () {
+                        setState(() {
+                          _section = LibrarySection.settings;
+                          _selectedPlaylistId = null;
+                        });
+                        _openLibrary();
+                      },
+                      icon: const Icon(
+                        Icons.settings_outlined,
+                        color: BitwaveColors.muted,
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
           StreamBuilder<MediaItem?>(
@@ -1318,7 +2285,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ),
     ),
     onTap: () {
-      setState(() => _section = section);
+      setState(() {
+        _section = section;
+        _selectedArtist = null;
+        _selectedPlaylistId = null;
+        _selectedPlaylistTracks = [];
+        if (section == LibrarySection.library) _activeCategoryIndex = 0;
+      });
+      if (section == LibrarySection.library && _deckController.hasClients) {
+        _deckController.jumpToPage(0);
+      }
       _openLibrary();
     },
   );
@@ -1510,12 +2486,26 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           fontSize: 12,
                         ),
                       ),
-                      trailing: IconButton(
-                        icon: const Icon(
-                          Icons.close,
-                          color: BitwaveColors.muted,
-                        ),
-                        onPressed: () => widget.audio.removeFromQueue(i),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: 'Add to playlist',
+                            icon: const Icon(
+                              Icons.playlist_add_rounded,
+                              color: BitwaveColors.muted,
+                            ),
+                            onPressed: () => _addTrackToPlaylist(t),
+                          ),
+                          IconButton(
+                            tooltip: 'Remove from queue',
+                            icon: const Icon(
+                              Icons.close,
+                              color: BitwaveColors.muted,
+                            ),
+                            onPressed: () => widget.audio.removeFromQueue(i),
+                          ),
+                        ],
                       ),
                       onTap: () => widget.audio.skipToQueueItem(i),
                     );
@@ -1596,16 +2586,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
             ? 'Off'
             : 'Stops at ${TimeOfDay.fromDateTime(_sleepDeadline!).format(context)}',
         onTap: _chooseSleepTimer,
-      ),
-      _settingHeading('AUDIO'),
-      const ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: Icon(Icons.equalizer_rounded, color: BitwaveColors.muted),
-        title: Text('Equalizer'),
-        subtitle: Text(
-          'Processing controls are not available in the current playback backend',
-          style: TextStyle(color: BitwaveColors.muted, fontSize: 12),
-        ),
       ),
       _settingHeading('ABOUT'),
       const ListTile(
@@ -1801,12 +2781,268 @@ class _LibraryScreenState extends State<LibraryScreen> {
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 }
 
+class _AlbumDetailPage extends StatelessWidget {
+  const _AlbumDetailPage({
+    required this.tracks,
+    required this.audio,
+    required this.onEditArtwork,
+    required this.onAddToPlaylist,
+    required this.onBack,
+  });
+
+  final List<Track> tracks;
+  final BitwaveAudioHandler audio;
+  final VoidCallback onEditArtwork;
+  final VoidCallback onAddToPlaylist;
+  final VoidCallback onBack;
+
+  String _durationLabel(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+    if (hours > 0) return '$hours hr ${minutes} min';
+    return '$minutes min';
+  }
+
+  String _trackTime(Duration duration) =>
+      '${duration.inMinutes}:${duration.inSeconds.remainder(60).toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext context) {
+    final album = tracks.first;
+    final artist = album.albumArtist.isEmpty
+        ? album.displayArtist
+        : album.albumArtist;
+    final totalDuration = tracks.fold<Duration>(
+      Duration.zero,
+      (total, track) => total + track.duration,
+    );
+    final formats = tracks.map((track) => track.format.toUpperCase()).toSet();
+
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            pinned: true,
+            backgroundColor: Colors.transparent,
+            surfaceTintColor: Colors.transparent,
+            foregroundColor: Colors.white,
+            expandedHeight: MediaQuery.sizeOf(context).width * 1.02,
+            toolbarHeight: 82,
+            leadingWidth: 76,
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 14),
+              child: _albumAction(
+                icon: Icons.chevron_left_rounded,
+                label: 'Back',
+                onPressed: onBack,
+              ),
+            ),
+            actions: [
+              _albumAction(
+                icon: Icons.play_arrow_rounded,
+                label: 'Play album',
+                onPressed: () => audio.playTracks(tracks),
+              ),
+              _albumAction(
+                icon: Icons.shuffle_rounded,
+                label: 'Shuffle album',
+                onPressed: () => audio.playTracks(List.of(tracks)..shuffle()),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(left: 8, right: 18),
+                child: PopupMenuButton<String>(
+                  tooltip: 'Album options',
+                  color: BitwaveColors.panel,
+                  icon: const CircleAvatar(
+                    backgroundColor: Color(0x66282828),
+                    child: Icon(Icons.more_horiz_rounded),
+                  ),
+                  onSelected: (value) {
+                    if (value == 'artwork') onEditArtwork();
+                    if (value == 'playlist') onAddToPlaylist();
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'playlist',
+                      child: Text('Add album to playlist'),
+                    ),
+                    PopupMenuItem(
+                      value: 'artwork',
+                      child: Text('Edit album artwork'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            flexibleSpace: FlexibleSpaceBar(
+              background: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _NowPlayingArtwork(track: album, animated: false),
+                  const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Color(0x33000000),
+                          Colors.transparent,
+                          Color(0xCC090A0B),
+                        ],
+                        stops: [0, .52, 1],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    album.displayAlbum,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 38,
+                      height: 1.05,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: -1.1,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    '$artist  ·  ${tracks.length} songs  ·  ${_durationLabel(totalDuration)}',
+                    style: const TextStyle(
+                      color: Color(0xFFC5C4C3),
+                      fontSize: 16,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    formats.join(' · '),
+                    style: const TextStyle(
+                      color: Color(0xFFAAA9A8),
+                      fontSize: 15,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(22, 0, 22, 32),
+            sliver: SliverList.separated(
+              itemCount: tracks.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 2),
+              itemBuilder: (context, index) {
+                final track = tracks[index];
+                final number = track.trackNumber ?? index + 1;
+                return StreamBuilder<MediaItem?>(
+                  stream: audio.mediaItem,
+                  builder: (context, snapshot) {
+                    final isCurrent = snapshot.data?.id == track.id;
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () =>
+                          audio.playTracks(tracks, initialIndex: index),
+                      child: SizedBox(
+                        height: 76,
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 38,
+                              child: Text(
+                                '$number',
+                                textAlign: TextAlign.left,
+                                style: TextStyle(
+                                  color: isCurrent
+                                      ? BitwaveColors.accent
+                                      : const Color(0xFF8F9092),
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    track.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    track.displayArtist,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFFAAA9A8),
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Text(
+                              _trackTime(track.duration),
+                              style: const TextStyle(
+                                color: Color(0xFFAAA9A8),
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _albumAction({
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+  }) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 5),
+    child: IconButton(
+      tooltip: label,
+      onPressed: onPressed,
+      style: IconButton.styleFrom(
+        backgroundColor: const Color(0x66282828),
+        foregroundColor: const Color(0xFFF4F2EF),
+        fixedSize: const Size(46, 46),
+      ),
+      icon: Icon(icon, size: 25),
+    ),
+  );
+}
+
 class _NowPlayingScreen extends StatefulWidget {
   const _NowPlayingScreen({
     required this.audio,
     required this.artworkStyle,
     required this.animatedArtworkEnabled,
     required this.onOpenDetails,
+    required this.onAddToPlaylist,
     required this.onOpenMenu,
   });
 
@@ -1814,6 +3050,7 @@ class _NowPlayingScreen extends StatefulWidget {
   final String artworkStyle;
   final bool animatedArtworkEnabled;
   final ValueChanged<Track> onOpenDetails;
+  final ValueChanged<Track> onAddToPlaylist;
   final VoidCallback onOpenMenu;
 
   @override
@@ -1825,86 +3062,103 @@ class _NowPlayingPill extends StatelessWidget {
     required this.audio,
     required this.onTap,
     required this.onSwipe,
+    required this.availableHeight,
   });
 
   final BitwaveAudioHandler audio;
   final VoidCallback onTap;
   final VoidCallback onSwipe;
+  final double availableHeight;
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    behavior: HitTestBehavior.opaque,
-    onTap: onTap,
-    onHorizontalDragEnd: (_) => onSwipe(),
-    onVerticalDragEnd: (_) => onSwipe(),
-    child: Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF08090B),
-        borderRadius: const BorderRadius.horizontal(left: Radius.circular(30)),
-        border: Border.all(color: const Color(0x20FFFFFF)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x55000000),
-            blurRadius: 18,
-            offset: Offset(-5, 0),
+  Widget build(BuildContext context) => StreamBuilder<MediaItem?>(
+    stream: audio.mediaItem,
+    builder: (context, snapshot) {
+      final item = snapshot.data;
+      final rawTitle = item?.title;
+      final title = rawTitle == null || rawTitle.isEmpty
+          ? 'Now playing'
+          : rawTitle.trim();
+      final label = [
+        title,
+        if ((item?.artist ?? '').isNotEmpty) item!.artist!,
+      ].join(' · ');
+      final maxHeight = math.max(
+        150.0,
+        math.min(availableHeight * .78, availableHeight - 24),
+      );
+      final minHeight = math.min(180.0, maxHeight);
+      final pillHeight = (label.length * 7.5 + 104).clamp(minHeight, maxHeight);
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        onHorizontalDragEnd: (_) => onSwipe(),
+        onVerticalDragEnd: (_) => onSwipe(),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          width: 46,
+          height: pillHeight,
+          decoration: BoxDecoration(
+            color: const Color(0xFF08090B),
+            borderRadius: const BorderRadius.horizontal(
+              left: Radius.circular(27),
+            ),
+            border: Border.all(color: const Color(0x20FFFFFF)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x55000000),
+                blurRadius: 18,
+                offset: Offset(-5, 0),
+              ),
+            ],
           ),
-        ],
-      ),
-      child: SafeArea(
-        child: StreamBuilder<MediaItem?>(
-          stream: audio.mediaItem,
-          builder: (context, snapshot) {
-            final item = snapshot.data;
-            final label = [
-              item?.title ?? 'Now playing',
-              if ((item?.artist ?? '').isNotEmpty) item!.artist!,
-            ].join('  ·  ');
-            return LayoutBuilder(
-              builder: (context, constraints) => Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Expanded(
-                    child: Center(
-                      child: RotatedBox(
-                        quarterTurns: 3,
-                        child: SizedBox(
-                          width: constraints.maxHeight - 62,
-                          child: Text(
-                            label,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Color(0xFFE5E3E1),
-                              fontSize: 13,
-                              letterSpacing: .2,
-                            ),
+          child: LayoutBuilder(
+            builder: (context, constraints) => Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Center(
+                    child: RotatedBox(
+                      quarterTurns: 3,
+                      child: SizedBox(
+                        width: math.max(40, constraints.maxHeight - 52),
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Color(0xFFE5E3E1),
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            letterSpacing: .2,
                           ),
                         ),
                       ),
                     ),
                   ),
-                  StreamBuilder<bool>(
-                    stream: audio.player.playingStream,
-                    initialData: audio.player.playing,
-                    builder: (context, playback) => Padding(
-                      padding: const EdgeInsets.only(bottom: 18),
-                      child: Icon(
-                        playback.data == true
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
-                        color: const Color(0xFFF3F0EB),
-                        size: 22,
-                      ),
+                ),
+                StreamBuilder<bool>(
+                  stream: audio.player.playingStream,
+                  initialData: audio.player.playing,
+                  builder: (context, playback) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Icon(
+                      playback.data == true
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
+                      color: const Color(0xFFF3F0EB),
+                      size: 22,
                     ),
                   ),
-                ],
-              ),
-            );
-          },
+                ),
+              ],
+            ),
+          ),
         ),
-      ),
-    ),
+      );
+    },
   );
 }
 
@@ -1925,7 +3179,7 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
       final item = snapshot.data;
       if (item == null) {
         return Scaffold(
-          backgroundColor: const Color(0xFF090A0B),
+          backgroundColor: Colors.transparent,
           body: SafeArea(
             child: Stack(
               children: [
@@ -1966,6 +3220,14 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
           .where((t) => t.id == item.id)
           .firstOrNull;
       final ratio = _aspectRatio(track);
+      final reducedMotion = MediaQuery.disableAnimationsOf(context);
+      final animatedCoverAvailable =
+          widget.animatedArtworkEnabled &&
+          !reducedMotion &&
+          track != null &&
+          track.animatedArtwork &&
+          (track.motionArtworkPath != null || track.motionArtworkUrl != null);
+      final immersiveArtwork = _immersiveArtwork || animatedCoverAvailable;
 
       return Scaffold(
         backgroundColor: const Color(0xFF090A0B),
@@ -1977,7 +3239,7 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                 key: ValueKey('backdrop-${track.id}'),
                 track: track,
               ),
-            if (track != null && _immersiveArtwork)
+            if (track != null && immersiveArtwork)
               Positioned.fill(
                 child: _NowPlayingArtwork(
                   key: ValueKey('immersive-${track.id}'),
@@ -2033,38 +3295,72 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                         child: SizedBox(
                           width: artWidth,
                           height: artHeight,
-                          child: track == null
-                              ? const _ArtworkPlaceholder()
-                              : GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: () => widget.audio.player.playing
-                                      ? widget.audio.pause()
-                                      : widget.audio.play(),
-                                  onDoubleTap: () => setState(
-                                    () =>
-                                        _immersiveArtwork = !_immersiveArtwork,
-                                  ),
-                                  onVerticalDragEnd: (details) {
-                                    final velocity =
-                                        details.primaryVelocity ?? 0;
-                                    if (velocity < -350) {
-                                      widget.audio.skipToNext();
-                                    } else if (velocity > 350) {
-                                      widget.audio.skipToPrevious();
-                                    }
-                                  },
-                                  child: _immersiveArtwork
-                                      ? const SizedBox.expand()
-                                      : _NowPlayingArtwork(
-                                          key: ValueKey(track.id),
-                                          track: track,
-                                          animated:
-                                              widget.animatedArtworkEnabled &&
-                                              !MediaQuery.disableAnimationsOf(
-                                                context,
-                                              ),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            alignment: Alignment.center,
+                            children: [
+                              track == null
+                                  ? const _ArtworkPlaceholder()
+                                  : GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () => widget.audio.player.playing
+                                          ? widget.audio.pause()
+                                          : widget.audio.play(),
+                                      onDoubleTap: animatedCoverAvailable
+                                          ? null
+                                          : () => setState(
+                                              () => _immersiveArtwork =
+                                                  !_immersiveArtwork,
+                                            ),
+                                      onVerticalDragEnd: (details) {
+                                        final velocity =
+                                            details.primaryVelocity ?? 0;
+                                        if (velocity < -350) {
+                                          widget.audio.skipToNext();
+                                        } else if (velocity > 350) {
+                                          widget.audio.skipToPrevious();
+                                        }
+                                      },
+                                      child: immersiveArtwork
+                                          ? const SizedBox.expand()
+                                          : _NowPlayingArtwork(
+                                              key: ValueKey(track.id),
+                                              track: track,
+                                              animated:
+                                                  widget
+                                                      .animatedArtworkEnabled &&
+                                                  !MediaQuery.disableAnimationsOf(
+                                                    context,
+                                                  ),
+                                            ),
+                                    ),
+                              if (track != null)
+                                IgnorePointer(
+                                  child: StreamBuilder<bool>(
+                                    stream: widget.audio.player.playingStream,
+                                    initialData: widget.audio.player.playing,
+                                    builder: (context, playback) => Center(
+                                      child: DecoratedBox(
+                                        decoration: const BoxDecoration(
+                                          color: Color(0x55000000),
+                                          shape: BoxShape.circle,
                                         ),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(15),
+                                          child: Icon(
+                                            playback.data == true
+                                                ? Icons.pause_rounded
+                                                : Icons.play_arrow_rounded,
+                                            size: 38,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                 ),
+                            ],
+                          ),
                         ),
                       ),
                       SizedBox(height: constraints.maxHeight * .09),
@@ -2127,6 +3423,15 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                                 ),
                               ),
                             ),
+                            if (track != null)
+                              IconButton(
+                                tooltip: 'Add to playlist',
+                                onPressed: () => widget.onAddToPlaylist(track),
+                                icon: const Icon(
+                                  Icons.playlist_add_rounded,
+                                  color: BitwaveColors.muted,
+                                ),
+                              ),
                           ],
                         ),
                       ),
@@ -2456,43 +3761,56 @@ class _OutputDeviceLabelState extends State<_OutputDeviceLabel> {
 
   @override
   Widget build(BuildContext context) => Center(
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Icon(
-          Icons.headphones_rounded,
-          size: 20,
-          color: Color(0xFFC4BFBD),
+    child: ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.sizeOf(context).width * .88,
+      ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: const Color(0x6608080A),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: const Color(0x28FFFFFF)),
         ),
-        const SizedBox(width: 9),
-        Flexible(
-          child: Text(
-            _name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Color(0xFFD2CDCA),
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Container(width: 1, height: 14, color: const Color(0xFF514C49)),
-        const SizedBox(width: 10),
-        Flexible(
-          child: Text(
-            widget.formatInfo,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.headphones_rounded,
+              size: 20,
               color: Color(0xFFC4BFBD),
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
             ),
-          ),
+            const SizedBox(width: 9),
+            Flexible(
+              child: Text(
+                _name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Color(0xFFD2CDCA),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Container(width: 1, height: 14, color: const Color(0xFF514C49)),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                widget.formatInfo,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Color(0xFFC4BFBD),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
     ),
   );
 }
