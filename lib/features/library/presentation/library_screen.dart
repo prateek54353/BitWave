@@ -44,8 +44,7 @@ class LibraryScreen extends StatefulWidget {
   State<LibraryScreen> createState() => _LibraryScreenState();
 }
 
-class _LibraryScreenState extends State<LibraryScreen>
-    with WidgetsBindingObserver {
+class _LibraryScreenState extends State<LibraryScreen> {
   final PageController _canvasController = PageController(initialPage: 1);
   final PageController _deckController = PageController();
   final ScrollController _categoryController = ScrollController();
@@ -60,6 +59,7 @@ class _LibraryScreenState extends State<LibraryScreen>
   bool _searching = false;
   bool _scanning = false;
   bool _libraryReady = false;
+  String? _libraryLoadError;
   String _query = '';
   String? _selectedArtist;
   String? _selectedFolderPath;
@@ -78,13 +78,21 @@ class _LibraryScreenState extends State<LibraryScreen>
   int _filesChangedThisWeek = 0;
   Map<String, List<Track>> _albumIndex = {};
   Map<String, List<Track>> _artistIndex = {};
+  List<Track> _recentDeckItems = const [];
+  List<Track> _albumDeckItems = const [];
+  List<Track> _artistDeckItems = const [];
+  List<Track> _songDeckItems = const [];
+  List<Track> _genreDeckItems = const [];
+  List<Track> _folderDeckItems = const [];
+  Set<String> _genreKeys = const {};
+  Set<String> _folderKeys = const {};
+  Map<String, Track> _tracksById = const {};
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _categoryController.addListener(_onCategoryRibbonScroll);
-    _refresh();
+    unawaited(_refresh());
     _startIOSFolderMonitoring();
   }
 
@@ -93,7 +101,6 @@ class _LibraryScreenState extends State<LibraryScreen>
     _sleepTimer?.cancel();
     _iosFolderRescanTimer?.cancel();
     _iosFolderSubscription?.cancel();
-    WidgetsBinding.instance.removeObserver(this);
     _canvasController.dispose();
     _deckController.dispose();
     _categoryController
@@ -102,16 +109,10 @@ class _LibraryScreenState extends State<LibraryScreen>
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _syncIOSLocalFolder();
-  }
-
   Future<void> _startIOSFolderMonitoring() async {
     if (!Platform.isIOS) return;
     try {
       final folder = await widget.library.iosLocalFilesDirectory();
-      await _syncIOSLocalFolder();
       _iosFolderSubscription = folder
           .watch(events: FileSystemEvent.all, recursive: true)
           .listen(
@@ -320,38 +321,79 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   Future<void> _refresh() async {
-    final tracks = await widget.library.load();
-    if (mounted) {
+    try {
+      final tracks = await widget.library.load();
+      if (!mounted) return;
       setState(() {
         _tracks = tracks;
         _indexLibrary(tracks);
         _libraryReady = true;
+        _libraryLoadError = null;
       });
+      final playlistId = _selectedPlaylistId;
+      final results = await Future.wait([
+        widget.library.database.playlists(),
+        playlistId == null
+            ? Future.value(<Track>[])
+            : widget.library.database.playlistTracks(playlistId),
+        widget.library.database.getSetting('now_playing_artwork_style'),
+      ]);
+      final playlists = results[0] as List<Playlist>;
+      final playlistTracks = results[1] as List<Track>;
+      final style = results[2] as String?;
+      if (mounted) {
+        setState(() {
+          _playlists = playlists;
+          if (_selectedPlaylistId == playlistId) {
+            _selectedPlaylistTracks = playlistTracks;
+          }
+          _artworkStyle = style ?? 'automatic';
+        });
+      }
+      final tracksById = {for (final track in tracks) track.id: track};
+      _tracksById = tracksById;
+      for (final queuedTrack in widget.audio.tracks) {
+        final updated = tracksById[queuedTrack.id];
+        if (updated != null) widget.audio.updateTrackMetadata(updated);
+      }
+    } catch (error) {
+      debugPrint('Bitwave library load failed: $error');
+      if (mounted) {
+        setState(() {
+          _libraryReady = false;
+          _libraryLoadError = error.toString();
+        });
+      }
     }
-    final playlistId = _selectedPlaylistId;
-    final results = await Future.wait([
-      widget.library.database.playlists(),
-      playlistId == null
-          ? Future.value(<Track>[])
-          : widget.library.database.playlistTracks(playlistId),
-      widget.library.database.getSetting('now_playing_artwork_style'),
-    ]);
-    final playlists = results[0] as List<Playlist>;
-    final playlistTracks = results[1] as List<Track>;
-    final style = results[2] as String?;
-    if (mounted) {
-      setState(() {
-        _playlists = playlists;
-        if (_selectedPlaylistId == playlistId) {
-          _selectedPlaylistTracks = playlistTracks;
-        }
-        _artworkStyle = style ?? 'automatic';
-      });
-    }
-    final tracksById = {for (final track in tracks) track.id: track};
-    for (final queuedTrack in widget.audio.tracks) {
-      final updated = tracksById[queuedTrack.id];
-      if (updated != null) widget.audio.updateTrackMetadata(updated);
+  }
+
+  Future<void> _refreshLibraryFromSettings() async {
+    if (_scanning) return;
+    setState(() => _scanning = true);
+    try {
+      final changed = Platform.isIOS
+          ? await widget.library.syncIOSLocalFiles()
+          : 0;
+      await _refresh();
+      if (mounted && _libraryLoadError == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              changed == 0
+                  ? 'Library is up to date.'
+                  : 'Library refreshed · $changed file changes applied.',
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Library refresh failed: $error')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _scanning = false);
     }
   }
 
@@ -370,7 +412,54 @@ class _LibraryScreenState extends State<LibraryScreen>
       (_albumIndex[albumKey] ??= []).add(track);
       (_artistIndex[track.displayArtist] ??= []).add(track);
     }
+    _tracksById = {for (final track in tracks) track.id: track};
+    _genreKeys = {
+      for (final track in tracks)
+        track.genre.isEmpty ? 'Uncategorized' : track.genre,
+    };
+    _folderKeys = {for (final track in tracks) File(track.path).parent.path};
+
+    _recentDeckItems = List<Track>.of(tracks)
+      ..sort((a, b) => b.modifiedMs.compareTo(a.modifiedMs));
+    _albumDeckItems = _albumIndex.values.map((items) => items.first).toList()
+      ..sort(_compareAlbumTracks);
+    _artistDeckItems = _artistIndex.values.map((items) => items.first).toList()
+      ..sort(_compareArtistTracks);
+    _songDeckItems = List<Track>.of(tracks)..sort(_compareSongTracks);
+    final genres = <String, Track>{};
+    final folders = <String, Track>{};
+    for (final track in tracks) {
+      genres.putIfAbsent(
+        track.genre.isEmpty ? 'Uncategorized' : track.genre,
+        () => track,
+      );
+      folders.putIfAbsent(File(track.path).parent.path, () => track);
+    }
+    _genreDeckItems = genres.values.toList()
+      ..sort(
+        (a, b) =>
+            _genreName(a).toLowerCase().compareTo(_genreName(b).toLowerCase()),
+      );
+    _folderDeckItems = folders.values.toList()
+      ..sort(
+        (a, b) =>
+            _folderName(a)
+                .toLowerCase()
+                .compareTo(_folderName(b).toLowerCase()),
+      );
   }
+
+  static int _compareAlbumTracks(Track a, Track b) =>
+      a.displayAlbum.toLowerCase().compareTo(b.displayAlbum.toLowerCase());
+
+  static int _compareArtistTracks(Track a, Track b) =>
+      a.displayArtist.toLowerCase().compareTo(b.displayArtist.toLowerCase());
+
+  static int _compareSongTracks(Track a, Track b) =>
+      a.title.toLowerCase().compareTo(b.title.toLowerCase());
+
+  static String _genreName(Track track) =>
+      track.genre.isEmpty ? 'Uncategorized' : track.genre;
 
   String _albumKey(Track track) =>
       '${track.displayAlbum.trim().toLowerCase()}\u0000${track.albumArtist.trim().toLowerCase()}';
@@ -892,8 +981,10 @@ class _LibraryScreenState extends State<LibraryScreen>
               Padding(
                 padding: const EdgeInsets.fromLTRB(29, 14, 28, 0),
                 child: Text(
-                  !_libraryReady
-                      ? 'Loading library…'
+                  _libraryLoadError != null
+                      ? 'Library unavailable · refresh from Settings'
+                      : !_libraryReady
+                      ? 'Loading saved library…'
                       : _activeCategoryIndex == 0
                       ? '$_filesChangedThisWeek files changed this week'
                       : '${_categoryCount(_activeCategoryIndex)} ${_categoryCountLabel(_activeCategoryIndex)}',
@@ -945,7 +1036,9 @@ class _LibraryScreenState extends State<LibraryScreen>
                 Padding(
                   padding: const EdgeInsets.fromLTRB(28, 0, 32, 20),
                   child: Text(
-                    _activeCategoryIndex == 5
+                    _libraryLoadError != null
+                        ? 'Library could not be loaded. Open Settings and refresh to retry.'
+                        : _activeCategoryIndex == 5
                         ? 'Folders containing your imported music will appear here.'
                         : 'Your local music will appear here after you import audio.',
                     style: const TextStyle(
@@ -991,9 +1084,11 @@ class _LibraryScreenState extends State<LibraryScreen>
         ),
         const SizedBox(height: 4),
         Text(
-          _libraryReady
+          _libraryLoadError != null
+              ? 'Library unavailable · refresh from Settings'
+              : _libraryReady
               ? '${_formatStorage(totalBytes)}  ·  ${_tracks.length} ${_tracks.length == 1 ? 'track' : 'tracks'}'
-              : 'Loading library…',
+              : 'Loading saved library…',
           style: const TextStyle(color: Color(0xFFB8B8B8), fontSize: 14),
         ),
         const SizedBox(height: 18),
@@ -1015,68 +1110,15 @@ class _LibraryScreenState extends State<LibraryScreen>
   );
 
   List<Track> _deckItemsForCategory(int category) {
-    final tracks = List<Track>.of(_visibleTracks);
-    if (category == 0) {
-      tracks.sort((a, b) => b.modifiedMs.compareTo(a.modifiedMs));
-      return tracks;
-    }
-    if (category == 1) {
-      final visibleIds = tracks.map((track) => track.id).toSet();
-      final albums = _albumIndex.values
-          .map((albumTracks) => albumTracks.first)
-          .where((track) => visibleIds.contains(track.id))
-          .toList();
-      albums.sort(
-        (a, b) => a.displayAlbum.toLowerCase().compareTo(
-          b.displayAlbum.toLowerCase(),
-        ),
-      );
-      return albums;
-    }
-    if (category == 2) {
-      final visibleIds = tracks.map((track) => track.id).toSet();
-      final artists = _artistIndex.values
-          .map((artistTracks) => artistTracks.first)
-          .where((track) => visibleIds.contains(track.id))
-          .toList();
-      artists.sort(
-        (a, b) => a.displayArtist.toLowerCase().compareTo(
-          b.displayArtist.toLowerCase(),
-        ),
-      );
-      return artists;
-    }
-    if (category == 4) {
-      final genres = <String, Track>{};
-      for (final track in tracks) {
-        genres.putIfAbsent(
-          track.genre.isEmpty ? 'Uncategorized' : track.genre,
-          () => track,
-        );
-      }
-      return genres.values.toList()..sort(
-        (a, b) => a.genre.toLowerCase().compareTo(b.genre.toLowerCase()),
-      );
-    }
-    if (category == 5) {
-      final folders = <String, Track>{};
-      for (final track in tracks) {
-        folders.putIfAbsent(File(track.path).parent.path, () => track);
-      }
-      final folderTracks = folders.values.toList();
-      folderTracks.sort(
-        (a, b) =>
-            _folderName(a)
-                .toLowerCase()
-                .compareTo(_folderName(b).toLowerCase()),
-      );
-      return folderTracks;
-    }
-    if (category == 6) return const [];
-    tracks.sort(
-      (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
-    );
-    return tracks;
+    return switch (category) {
+      0 => _recentDeckItems,
+      1 => _albumDeckItems,
+      2 => _artistDeckItems,
+      3 => _songDeckItems,
+      4 => _genreDeckItems,
+      5 => _folderDeckItems,
+      _ => const [],
+    };
   }
 
   String _featuredTitle(int category, Track track) => switch (category) {
@@ -1089,11 +1131,9 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   String _featuredSubtitle(int category, Track track) => switch (category) {
     1 => _albumArtistLabel(_albumIndex[_albumKey(track)] ?? [track]),
-    2 =>
-      '${_tracks.where((t) => t.displayArtist == track.displayArtist).length} tracks',
-    4 => '${_tracks.where((t) => t.genre == track.genre).length} tracks',
-    5 =>
-      '${_tracks.where((t) => File(t.path).parent.path == File(track.path).parent.path).length} tracks',
+    2 => '${_artistIndex[track.displayArtist]?.length ?? 0} tracks',
+    4 => '${_genreTrackCount(track)} tracks',
+    5 => '${_folderTrackCount(track)} tracks',
     _ => track.displayArtist,
   };
 
@@ -1101,12 +1141,8 @@ class _LibraryScreenState extends State<LibraryScreen>
     0 || 3 => _visibleTracks.length,
     1 => _albumIndex.length,
     2 => _artistIndex.length,
-    4 =>
-      _tracks
-          .map((track) => track.genre.isEmpty ? 'Uncategorized' : track.genre)
-          .toSet()
-          .length,
-    5 => _tracks.map((track) => File(track.path).parent.path).toSet().length,
+    4 => _genreKeys.length,
+    5 => _folderKeys.length,
     6 => _playlists.length,
     _ => 0,
   };
@@ -1127,6 +1163,18 @@ class _LibraryScreenState extends State<LibraryScreen>
             .where((part) => part.isNotEmpty)
             .lastOrNull ??
         path;
+  }
+
+  int _genreTrackCount(Track track) {
+    final genre = _genreName(track);
+    return _tracks.where((item) => _genreName(item) == genre).length;
+  }
+
+  int _folderTrackCount(Track track) {
+    final folder = File(track.path).parent.path;
+    return _tracks
+        .where((item) => File(item.path).parent.path == folder)
+        .length;
   }
 
   static String _formatStorage(int bytes) {
@@ -1550,8 +1598,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                 )
               : ReorderableListView.builder(
                   itemCount: tracks.length,
-                  onReorder: (from, to) async {
-                    if (to > from) to--;
+                  onReorderItem: (from, to) async {
                     await widget.library.database.movePlaylistTrack(
                       playlistId,
                       from,
@@ -2649,6 +2696,14 @@ class _LibraryScreenState extends State<LibraryScreen>
     children: [
       _settingHeading('LIBRARY'),
       _settingRow(
+        Icons.sync_rounded,
+        'Refresh library',
+        _scanning
+            ? 'Checking local music…'
+            : 'Reload saved tracks and check the Bitwave folder',
+        onTap: _scanning ? null : _refreshLibraryFromSettings,
+      ),
+      _settingRow(
         Icons.library_music_outlined,
         'Local music',
         '${_tracks.length} tracks',
@@ -2852,6 +2907,9 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   Widget _artwork(Track? track, double size, {double radius = 8}) {
+    final decodeSize = size.isFinite
+        ? (size * MediaQuery.devicePixelRatioOf(context)).round()
+        : null;
     Widget child;
     if (track?.artworkPath != null) {
       child = Image.file(
@@ -2868,6 +2926,7 @@ class _LibraryScreenState extends State<LibraryScreen>
         width: size,
         height: size,
         fit: BoxFit.cover,
+        cacheWidth: decodeSize,
         errorBuilder: (_, _, _) => track.embeddedArtworkPath == null
             ? _fallbackArt(size)
             : Image.file(
@@ -2882,6 +2941,7 @@ class _LibraryScreenState extends State<LibraryScreen>
         width: size,
         height: size,
         fit: BoxFit.cover,
+        cacheWidth: decodeSize,
         gaplessPlayback: true,
         errorBuilder: (_, _, _) => _fallbackArt(size),
       );
@@ -2905,13 +2965,10 @@ class _LibraryScreenState extends State<LibraryScreen>
     ),
   );
   Track? _trackById(String id) {
-    for (final t in _tracks) {
-      if (t.id == id) return t;
-    }
-    return null;
+    return _tracksById[id];
   }
 
-  int _albumCount() => _tracks.map(_albumKey).toSet().length;
+  int _albumCount() => _albumIndex.length;
   static String _time(Duration d) =>
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 }
@@ -2934,7 +2991,7 @@ class _AlbumDetailPage extends StatelessWidget {
   String _durationLabel(Duration duration) {
     final hours = duration.inHours;
     final minutes = duration.inMinutes.remainder(60);
-    if (hours > 0) return '$hours hr ${minutes} min';
+    if (hours > 0) return '$hours hr $minutes min';
     return '$minutes min';
   }
 
@@ -3926,21 +3983,34 @@ class _AdaptiveArtworkBackdrop extends StatelessWidget {
   Widget build(BuildContext context) {
     final track = this.track;
     final path = track.artworkPath ?? track.embeddedArtworkPath;
+    final media = MediaQuery.sizeOf(context);
+    final decodeSize =
+        (math.max(media.width, media.height) *
+                MediaQuery.devicePixelRatioOf(context))
+            .round()
+            .clamp(1, 1536);
     final Widget image;
     if (track.providerArtworkUrl != null && track.customArtworkPath == null) {
       image = Image.network(
         track.providerArtworkUrl!,
         fit: BoxFit.cover,
+        cacheWidth: decodeSize,
         errorBuilder: (_, _, _) => const _ArtworkPlaceholder(),
       );
     } else if (path != null) {
       image = Image.file(
         File(path),
         fit: BoxFit.cover,
+        cacheWidth: decodeSize,
         errorBuilder: (_, _, _) => const _ArtworkPlaceholder(),
       );
     } else if (track.artwork != null) {
-      image = Image.memory(track.artwork!, fit: BoxFit.cover);
+      image = Image.memory(
+        track.artwork!,
+        fit: BoxFit.cover,
+        cacheWidth: decodeSize,
+        gaplessPlayback: true,
+      );
     } else {
       image = const _ArtworkPlaceholder();
     }
@@ -4316,11 +4386,18 @@ class _NowPlayingArtwork extends StatelessWidget {
     final fit = track.artworkFit == 'fit' ? BoxFit.contain : BoxFit.cover;
     final alignment = Alignment(track.artworkFocusX, track.artworkFocusY);
     final path = track.artworkPath;
+    final media = MediaQuery.sizeOf(context);
+    final decodeSize =
+        (math.max(media.width, media.height) *
+                MediaQuery.devicePixelRatioOf(context))
+            .round()
+            .clamp(1, 2048);
     if (path != null) {
       return Image.file(
         File(path),
         fit: fit,
         alignment: alignment,
+        cacheWidth: decodeSize,
         errorBuilder: (_, _, _) => _fallback(),
       );
     }
@@ -4328,11 +4405,17 @@ class _NowPlayingArtwork extends StatelessWidget {
       return Image.network(
         track.providerArtworkUrl!,
         fit: BoxFit.cover,
+        cacheWidth: decodeSize,
         errorBuilder: (_, _, _) => _localOrFallback(),
       );
     }
     if (track.artwork != null) {
-      return Image.memory(track.artwork!, fit: BoxFit.cover);
+      return Image.memory(
+        track.artwork!,
+        fit: BoxFit.cover,
+        cacheWidth: decodeSize,
+        gaplessPlayback: true,
+      );
     }
     return _fallback();
   }

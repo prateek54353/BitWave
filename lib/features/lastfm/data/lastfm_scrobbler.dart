@@ -123,7 +123,7 @@ class LastFmScrobbler {
     final becamePlaying = playing && !_playing;
     _playing = playing;
     if (becamePlaying && _track != null) {
-      if (_startedAt == null) _startedAt = DateTime.now();
+      _startedAt ??= DateTime.now();
       unawaited(_updateNowPlaying(_track!));
     }
   }
