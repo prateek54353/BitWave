@@ -306,11 +306,23 @@ class _LibraryScreenState extends State<LibraryScreen>
     for (final track in tracks) {
       _libraryBytes += track.fileSize;
       if (track.modifiedMs >= weekAgo) _filesChangedThisWeek++;
-      final albumKey =
-          '${track.displayAlbum}\u0000${track.albumArtist.isEmpty ? track.displayArtist : track.albumArtist}';
+      final albumKey = _albumKey(track);
       (_albumIndex[albumKey] ??= []).add(track);
       (_artistIndex[track.displayArtist] ??= []).add(track);
     }
+  }
+
+  String _albumKey(Track track) =>
+      '${track.displayAlbum.trim().toLowerCase()}\u0000${track.albumArtist.trim().toLowerCase()}';
+
+  String _albumArtistLabel(Iterable<Track> tracks) {
+    final albumArtist = tracks
+        .map((track) => track.albumArtist.trim())
+        .firstWhere((artist) => artist.isNotEmpty, orElse: () => '');
+    if (albumArtist.isNotEmpty) return albumArtist;
+    final artists = tracks.map((track) => track.displayArtist).toSet();
+    if (artists.length == 1) return artists.first;
+    return artists.isEmpty ? 'Unknown artist' : 'Various Artists';
   }
 
   Future<void> _openTrackDetails(Track track) async {
@@ -985,7 +997,7 @@ class _LibraryScreenState extends State<LibraryScreen>
   };
 
   String _featuredSubtitle(int category, Track track) => switch (category) {
-    1 => track.albumArtist.isEmpty ? track.displayArtist : track.albumArtist,
+    1 => _albumArtistLabel(_albumIndex[_albumKey(track)] ?? [track]),
     2 =>
       '${_tracks.where((t) => t.displayArtist == track.displayArtist).length} tracks',
     4 => '${_tracks.where((t) => t.genre == track.genre).length} tracks',
@@ -1168,16 +1180,7 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   void _openDeckItem(int category, Track track) {
     if (category == 1) {
-      final albumArtist = track.albumArtist.isEmpty
-          ? track.displayArtist
-          : track.albumArtist;
-      final albumTracks = _tracks.where((candidate) {
-        final candidateArtist = candidate.albumArtist.isEmpty
-            ? candidate.displayArtist
-            : candidate.albumArtist;
-        return candidate.displayAlbum == track.displayAlbum &&
-            candidateArtist == albumArtist;
-      }).toList();
+      final albumTracks = _albumIndex[_albumKey(track)] ?? const <Track>[];
       if (albumTracks.isNotEmpty) _openAlbum(albumTracks);
     } else if (category == 2) {
       _openArtist(track.displayArtist);
@@ -1785,12 +1788,7 @@ class _LibraryScreenState extends State<LibraryScreen>
   Widget _albumBrowser(List<Track> tracks) {
     final albums = <String, List<Track>>{};
     for (final track in tracks) {
-      albums
-          .putIfAbsent(
-            '${track.displayAlbum}\u0000${track.albumArtist.isEmpty ? track.displayArtist : track.albumArtist}',
-            () => [],
-          )
-          .add(track);
+      albums.putIfAbsent(_albumKey(track), () => []).add(track);
     }
     final entries = albums.entries.toList()
       ..sort((a, b) => a.key.toLowerCase().compareTo(b.key.toLowerCase()));
@@ -1804,7 +1802,7 @@ class _LibraryScreenState extends State<LibraryScreen>
             leading: _artwork(t, 52),
             title: Text(t.displayAlbum),
             subtitle: Text(
-              '${t.albumArtist.isEmpty ? t.displayArtist : t.albumArtist}  ·  ${e.value.length} tracks',
+              '${_albumArtistLabel(e.value)}  ·  ${e.value.length} tracks',
               style: const TextStyle(color: BitwaveColors.muted, fontSize: 12),
             ),
             onTap: () => _openAlbum(e.value),
@@ -1839,7 +1837,7 @@ class _LibraryScreenState extends State<LibraryScreen>
               ),
               const SizedBox(height: 2),
               Text(
-                t.albumArtist.isEmpty ? t.displayArtist : t.albumArtist,
+                _albumArtistLabel(e.value),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -2775,8 +2773,7 @@ class _LibraryScreenState extends State<LibraryScreen>
     return null;
   }
 
-  int _albumCount() =>
-      _tracks.map((t) => '${t.album}|${t.albumArtist}').toSet().length;
+  int _albumCount() => _tracks.map(_albumKey).toSet().length;
   static String _time(Duration d) =>
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 }
@@ -2809,9 +2806,14 @@ class _AlbumDetailPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final album = tracks.first;
-    final artist = album.albumArtist.isEmpty
-        ? album.displayArtist
-        : album.albumArtist;
+    final artists = tracks.map((track) => track.displayArtist).toSet();
+    final artist = album.albumArtist.trim().isNotEmpty
+        ? album.albumArtist
+        : artists.length == 1
+        ? artists.first
+        : artists.isEmpty
+        ? 'Unknown artist'
+        : 'Various Artists';
     final totalDuration = tracks.fold<Duration>(
       Duration.zero,
       (total, track) => total + track.duration,
