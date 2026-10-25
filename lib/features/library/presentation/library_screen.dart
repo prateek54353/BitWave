@@ -13,7 +13,6 @@ import '../domain/track.dart';
 import '../../player/data/bitwave_audio_handler.dart';
 import '../../artwork/data/artwork_repository.dart';
 import '../../artwork/presentation/artwork_editor_sheet.dart';
-import '../../lyrics/domain/lrc_document.dart';
 import '../../lyrics/presentation/word_synced_lyrics.dart';
 import '../../lastfm/presentation/lastfm_settings_page.dart';
 import '../../playlists/domain/playlist.dart';
