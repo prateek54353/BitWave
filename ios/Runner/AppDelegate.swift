@@ -163,22 +163,21 @@ private final class BitwaveEqualizerPlugin: NSObject, FlutterPlugin {
     guard equalizer == nil else { return }
 
     audioSession = AVAudioSession.sharedInstance()
-    equalizer = AVAudioUnitEQ()
-    equalizer?.globalGain = 0.0
 
     let frequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-    bands = frequencies.map { freq in
-      let band = AVAudioUnitEQFilterParameters()
+    let eq = AVAudioUnitEQ(numberOfBands: frequencies.count)
+    eq.globalGain = 0.0
+    equalizer = eq
+
+    // AVAudioUnitEQ owns its filter parameter objects; configure the
+    // instances exposed by its read-only `bands` array.
+    bands = eq.bands
+    for (band, frequency) in zip(bands, frequencies) {
       band.filterType = .parametric
-      band.frequency = freq
+      band.frequency = frequency
       band.bandwidth = 1.0
       band.gain = 0.0
       band.bypass = false
-      return band
-    }
-
-    for band in bands {
-      equalizer?.bandParameters = bands
     }
   }
 
