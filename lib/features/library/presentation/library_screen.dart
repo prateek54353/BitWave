@@ -84,6 +84,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Set<String> _genreKeys = const {};
   Set<String> _folderKeys = const {};
   Map<String, Track> _tracksById = const {};
+  bool _lyricsSharingEnabled = false;
 
   @override
   void initState() {
@@ -91,6 +92,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _categoryController.addListener(_onCategoryRibbonScroll);
     unawaited(_refresh());
     _startIOSFolderMonitoring();
+    _loadLyricsSharingSetting();
+  }
+
+  Future<void> _loadLyricsSharingSetting() async {
+    final enabled = await widget.library.database.getLyricsSharingEnabled();
+    if (mounted) setState(() => _lyricsSharingEnabled = enabled);
   }
 
   @override
@@ -2769,6 +2776,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
             : 'Stops at ${TimeOfDay.fromDateTime(_sleepDeadline!).format(context)}',
         onTap: _chooseSleepTimer,
       ),
+      _settingHeading('LYRICS'),
+      SwitchListTile.adaptive(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Lyrics sharing'),
+        subtitle: const Text('Allow exporting lyrics as shareable images'),
+        value: _lyricsSharingEnabled,
+        onChanged: (value) async {
+          await widget.library.database.setLyricsSharingEnabled(value);
+          if (mounted) setState(() => _lyricsSharingEnabled = value);
+        },
+      ),
       _settingHeading('ABOUT'),
       const ListTile(
         contentPadding: EdgeInsets.zero,
@@ -3592,7 +3610,8 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                         WordSyncedLyrics(
                           lyrics: track!.lyrics!,
                           positionStream: widget.audio.player.positionStream,
-                          onSeek: (position) => widget.audio.player.seek(position),
+                          onSeek: (position) =>
+                              widget.audio.player.seek(position),
                         )
                       else
                         const SizedBox(height: 24),

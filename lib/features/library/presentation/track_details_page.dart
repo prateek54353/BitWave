@@ -13,6 +13,7 @@ import '../../artwork/presentation/artwork_editor_sheet.dart';
 import '../../player/data/bitwave_audio_handler.dart';
 import '../../lyrics/data/lrclib_provider.dart';
 import '../../lyrics/data/lrc_red_provider.dart';
+import '../../lyrics/presentation/lyrics_share_card.dart';
 import '../data/library_repository.dart';
 import '../domain/track.dart';
 
@@ -301,6 +302,30 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
     if (mounted) _message('Saved lyrics removed.');
   }
 
+  Future<void> _openLyricsShare() async {
+    final enabled = await widget.library.database.getLyricsSharingEnabled();
+    if (!enabled) {
+      if (mounted) {
+        _message('Lyrics sharing is disabled in Settings');
+      }
+      return;
+    }
+    if (_track.lyrics == null || _track.lyrics!.isEmpty) {
+      return;
+    }
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: BitwaveColors.panel,
+      builder: (_) => LyricsShareCardSheet(
+        track: _track,
+        lyrics: _track.lyrics!,
+        lyricsSource: 'LRCLIB',
+      ),
+    );
+  }
+
   String? _source(String? value) =>
       value?.trim().isNotEmpty == true ? value!.trim() : null;
   void _message(String value) =>
@@ -357,6 +382,12 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
             ),
             if ((_track.lyrics ?? '').isNotEmpty)
               TextButton(onPressed: _clearLyrics, child: const Text('Remove')),
+            if ((_track.lyrics ?? '').isNotEmpty)
+              TextButton.icon(
+                onPressed: _openLyricsShare,
+                icon: const Icon(Icons.share_rounded, size: 18),
+                label: const Text('Share'),
+              ),
             TextButton.icon(
               onPressed: _searchingLyrics ? null : _searchLyrics,
               icon: _searchingLyrics

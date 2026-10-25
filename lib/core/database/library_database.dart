@@ -630,4 +630,12 @@ class LibraryDatabase {
     where: 'id = ?',
     whereArgs: [id],
   );
+
+  Future<bool> getLyricsSharingEnabled() async {
+    final value = await getSetting('lyrics_sharing_enabled');
+    return value == 'true';
+  }
+
+  Future<void> setLyricsSharingEnabled(bool value) async =>
+      setSetting('lyrics_sharing_enabled', value ? 'true' : 'false');
 }
