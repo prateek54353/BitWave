@@ -638,4 +638,22 @@ class LibraryDatabase {
 
   Future<void> setLyricsSharingEnabled(bool value) async =>
       setSetting('lyrics_sharing_enabled', value ? 'true' : 'false');
+
+  Future<bool> getEqualizerEnabled() async {
+    final value = await getSetting('equalizer_enabled');
+    return value == 'true';
+  }
+
+  Future<void> setEqualizerEnabled(bool value) async =>
+      setSetting('equalizer_enabled', value ? 'true' : 'false');
+
+  Future<String?> getEqualizerPreset() async => getSetting('equalizer_preset');
+
+  Future<void> setEqualizerPreset(String preset) async =>
+      setSetting('equalizer_preset', preset);
+
+  Future<String?> getEqualizerBands() async => getSetting('equalizer_bands');
+
+  Future<void> setEqualizerBands(String bands) async =>
+      setSetting('equalizer_bands', bands);
 }

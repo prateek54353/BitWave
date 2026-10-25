@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import AVFoundation
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -14,6 +15,9 @@ import UIKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "BitwaveFolderImportPlugin") {
       BitwaveFolderImportPlugin.register(with: registrar)
+    }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "BitwaveEqualizerPlugin") {
+      BitwaveEqualizerPlugin.register(with: registrar)
     }
   }
 }
@@ -128,5 +132,95 @@ private final class BitwaveFolderImportPlugin: NSObject, FlutterPlugin, UIDocume
     var top = root
     while let presented = top?.presentedViewController { top = presented }
     return top
+  }
+}
+
+private final class BitwaveEqualizerPlugin: NSObject, FlutterPlugin {
+  private static let channelName = "org.bitwave.dev/equalizer"
+  private var audioSession: AVAudioSession?
+  private var equalizer: AVAudioUnitEQ?
+  private var bands: [AVAudioUnitEQFilterParameters] = []
+
+  static func register(with registrar: FlutterPluginRegistrar) {
+    let channel = FlutterMethodChannel(name: channelName, binaryMessenger: registrar.messenger())
+    registrar.addMethodCallDelegate(BitwaveEqualizerPlugin(), channel: channel)
+  }
+
+  func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "setEnabled":
+      setEnabled(call, result)
+    case "setBands":
+      setBands(call, result)
+    case "getBands":
+      getBands(result)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func setupEqualizer() {
+    guard equalizer == nil else { return }
+
+    audioSession = AVAudioSession.sharedInstance()
+    equalizer = AVAudioUnitEQ()
+    equalizer?.globalGain = 0.0
+
+    let frequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    bands = frequencies.map { freq in
+      let band = AVAudioUnitEQFilterParameters()
+      band.filterType = .parametric
+      band.frequency = freq
+      band.bandwidth = 1.0
+      band.gain = 0.0
+      band.bypass = false
+      return band
+    }
+
+    for band in bands {
+      equalizer?.bandParameters = bands
+    }
+  }
+
+  private func setEnabled(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
+    guard let args = call.arguments as? [String: Any],
+          let enabled = args["enabled"] as? Bool else {
+      result(FlutterError(code: "invalid_args", message: "Invalid arguments", details: nil))
+      return
+    }
+
+    if enabled {
+      setupEqualizer()
+    } else {
+      equalizer = nil
+      bands.removeAll()
+    }
+
+    result(nil)
+  }
+
+  private func setBands(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
+    guard let args = call.arguments as? [String: Any],
+          let bandValues = args["bands"] as? [Double] else {
+      result(FlutterError(code: "invalid_args", message: "Invalid arguments", details: nil))
+      return
+    }
+
+    guard bandValues.count == bands.count else {
+      result(FlutterError(code: "invalid_bands", message: "Expected 10 band values", details: nil))
+      return
+    }
+
+    for (index, value) in bandValues.enumerated() {
+      bands[index].gain = Float(value)
+    }
+
+    result(nil)
+  }
+
+  private func getBands(_ result: @escaping FlutterResult) {
+    let enabled = equalizer != nil
+    let bandValues = bands.map { Double($0.gain) }
+    result(["enabled": enabled, "bands": bandValues])
   }
 }

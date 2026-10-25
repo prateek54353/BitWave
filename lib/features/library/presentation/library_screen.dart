@@ -11,6 +11,7 @@ import '../../../app/theme/bitwave_theme.dart';
 import '../data/library_repository.dart';
 import '../domain/track.dart';
 import '../../player/data/bitwave_audio_handler.dart';
+import '../../player/presentation/equalizer_page.dart';
 import '../../artwork/data/artwork_repository.dart';
 import '../../artwork/presentation/artwork_editor_sheet.dart';
 import '../../lyrics/presentation/word_synced_lyrics.dart';
@@ -93,11 +94,27 @@ class _LibraryScreenState extends State<LibraryScreen> {
     unawaited(_refresh());
     _startIOSFolderMonitoring();
     _loadLyricsSharingSetting();
+    _loadEqualizerSettings();
   }
 
   Future<void> _loadLyricsSharingSetting() async {
     final enabled = await widget.library.database.getLyricsSharingEnabled();
     if (mounted) setState(() => _lyricsSharingEnabled = enabled);
+  }
+
+  Future<void> _loadEqualizerSettings() async {
+    final enabled = await widget.library.database.getEqualizerEnabled();
+    final bandsStr = await widget.library.database.getEqualizerBands();
+    if (enabled && bandsStr != null) {
+      final bandValues = bandsStr
+          .split(',')
+          .map((e) => double.tryParse(e) ?? 0.0)
+          .toList();
+      if (bandValues.length == 10) {
+        await widget.audio.equalizer.setEnabled(true);
+        await widget.audio.equalizer.setBands(bandValues);
+      }
+    }
   }
 
   @override
@@ -2776,6 +2793,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
             : 'Stops at ${TimeOfDay.fromDateTime(_sleepDeadline!).format(context)}',
         onTap: _chooseSleepTimer,
       ),
+      if (Platform.isIOS)
+        _settingRow(
+          Icons.equalizer_rounded,
+          'Equalizer',
+          '10-band audio equalizer',
+          onTap: _openEqualizer,
+        ),
       _settingHeading('LYRICS'),
       SwitchListTile.adaptive(
         contentPadding: EdgeInsets.zero,
@@ -2913,6 +2937,22 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final deadline = DateTime.now().add(Duration(minutes: minutes));
     _sleepTimer = Timer(Duration(minutes: minutes), widget.audio.pause);
     setState(() => _sleepDeadline = deadline);
+  }
+
+  Future<void> _openEqualizer() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => EqualizerPage(
+          equalizer: widget.audio.equalizer,
+          onChanged: () async {
+            final enabled = widget.audio.equalizer.enabled;
+            final bands = widget.audio.equalizer.bands.join(',');
+            await widget.library.database.setEqualizerEnabled(enabled);
+            await widget.library.database.setEqualizerBands(bands);
+          },
+        ),
+      ),
+    );
   }
 
   Widget _artwork(Track? track, double size, {double radius = 8}) {

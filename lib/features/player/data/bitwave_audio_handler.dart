@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../../../core/database/library_database.dart';
 import '../../library/domain/track.dart';
 import '../../lastfm/data/lastfm_scrobbler.dart';
+import 'equalizer.dart';
 
 class BitwaveAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
@@ -16,13 +17,16 @@ class BitwaveAudioHandler extends BaseAudioHandler
     maxSkipsOnError: 3,
   );
   final LastFmScrobbler lastFm;
+  final Equalizer equalizer;
   List<Track> _tracks = [];
   AudioPlayer get player => _player;
   List<Track> get tracks => List.unmodifiable(_tracks);
 
   BitwaveAudioHandler({LibraryDatabase? db})
-    : lastFm = LastFmScrobbler(db: db) {
+    : lastFm = LastFmScrobbler(db: db),
+      equalizer = Equalizer() {
     unawaited(lastFm.initialize());
+    unawaited(equalizer.load());
     _player.playbackEventStream.listen((_) => _publishState());
     _player.currentIndexStream.listen((index) {
       if (index != null && index < _tracks.length) {
