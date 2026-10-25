@@ -12,7 +12,7 @@ import '../../artwork/domain/artwork_asset.dart';
 import '../../artwork/presentation/artwork_editor_sheet.dart';
 import '../../player/data/bitwave_audio_handler.dart';
 import '../../lyrics/data/lrclib_provider.dart';
-import '../../lyrics/data/spicy_lyrics_provider.dart';
+import '../../lyrics/data/lrc_red_provider.dart';
 import '../data/library_repository.dart';
 import '../domain/track.dart';
 
@@ -40,14 +40,16 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
   static const _storage = FlutterSecureStorage();
   final _provider = AppleMusicArtworkProvider();
   final _lyricsProvider = LrclibProvider();
-  final _spicyLyricsProvider = SpicyLyricsProvider();
+  final _lrcRedProvider = LrcRedProvider();
   late Track _track;
   late final Map<String, TextEditingController> _fields;
   List<AppleArtworkMatch> _matches = [];
+  List<LrcRedMatch> _lrcRedMatches = [];
   bool _saving = false;
   bool _searching = false;
   bool _searchingLyrics = false;
-  bool _fetchingSpicyLyrics = false;
+  bool _searchingLrcRed = false;
+  bool _fetchingLrcRed = false;
   List<LyricsMatch> _lyricsMatches = [];
   String? _lyricsError;
   String? _providerError;
@@ -73,7 +75,7 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
     }
     _provider.dispose();
     _lyricsProvider.dispose();
-    _spicyLyricsProvider.dispose();
+    _lrcRedProvider.dispose();
     super.dispose();
   }
 
@@ -239,97 +241,58 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
     if (mounted) _message('Lyrics saved for offline playback.');
   }
 
-  Future<void> _fetchSpicyLyrics() async {
-    final apiKey = (await _storage.read(key: 'spicy_lyrics_api_key'))?.trim();
-    if (!mounted) return;
-    if (apiKey == null || apiKey.isEmpty) {
-      _message('Add a Spicy Lyrics API key in Settings → Spicy Lyrics first.');
-      return;
-    }
-    var spotifyTrackId = _track.spicyTrackId;
-    if (spotifyTrackId == null || spotifyTrackId.isEmpty) {
-      final input = TextEditingController();
-      final value = await showDialog<String>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Spotify track link'),
-          content: TextField(
-            controller: input,
-            autofocus: true,
-            autocorrect: false,
-            decoration: const InputDecoration(
-              hintText: 'Paste a Spotify track URL or ID',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, input.text.trim()),
-              child: const Text('Fetch'),
-            ),
-          ],
-        ),
-      );
-      input.dispose();
-      if (value == null) return;
-      final match = RegExp(r'([A-Za-z0-9]{22})').firstMatch(value);
-      spotifyTrackId = match?.group(1);
-      if (spotifyTrackId == null) {
-        _message('That does not look like a Spotify track link or ID.');
-        return;
-      }
-    }
+  Future<void> _searchLrcRed() async {
     setState(() {
-      _fetchingSpicyLyrics = true;
+      _searchingLrcRed = true;
+      _lrcRedMatches = [];
       _lyricsError = null;
     });
     try {
-      final result = await _spicyLyricsProvider.fetch(
-        spotifyTrackId: spotifyTrackId,
-        apiKey: apiKey,
+      final results = await _lrcRedProvider.search(
+        title: _fields['Title']!.text.trim(),
+        artist: _fields['Artist']!.text.trim().isEmpty
+            ? _fields['Album artist']!.text.trim()
+            : _fields['Artist']!.text.trim(),
+        album: _fields['Album']!.text.trim(),
       );
-      await widget.library.database.updateSpicyTrackId(
-        id: _track.id,
-        spotifyTrackId: spotifyTrackId,
-      );
-      await widget.library.database.updateLyrics(
-        id: _track.id,
-        lyrics: result.encode(),
-      );
-      await _reload();
-      if (mounted) _message('Word-synced lyrics saved for offline playback.');
+      if (mounted) {
+        setState(() {
+          _lrcRedMatches = results;
+          if (results.isEmpty) _lyricsError = 'No lrc.red matches found.';
+        });
+      }
     } catch (error) {
       if (mounted) setState(() => _lyricsError = error.toString());
     } finally {
-      if (mounted) setState(() => _fetchingSpicyLyrics = false);
+      if (mounted) setState(() => _searchingLrcRed = false);
+    }
+  }
+
+  Future<void> _fetchLrcRed(String isrc) async {
+    setState(() {
+      _fetchingLrcRed = true;
+      _lyricsError = null;
+    });
+    try {
+      final lyrics = await _lrcRedProvider.fetchLrc(isrc);
+      if (lyrics == null) {
+        if (mounted) {
+          setState(() => _lyricsError = 'No lyrics available for this track.');
+        }
+        return;
+      }
+      await widget.library.database.updateLyrics(id: _track.id, lyrics: lyrics);
+      await _reload();
+      if (mounted) _message('Synced lyrics saved for offline playback.');
+    } catch (error) {
+      if (mounted) setState(() => _lyricsError = error.toString());
+    } finally {
+      if (mounted) setState(() => _fetchingLrcRed = false);
     }
   }
 
   String _lyricsDisplayText(String lyrics) {
-    const prefix = 'BITWAVE_SPICY_LYRICS:';
-    if (!lyrics.startsWith(prefix)) return lyrics.trim();
-    try {
-      final result = SpicyLyricsResult.fromJson(lyrics);
-      return result.lines
-          .map((line) {
-            final output = StringBuffer();
-            for (var i = 0; i < line.words.length; i++) {
-              output.write(line.words[i].text);
-              while (line.words[i].partOfWord && i + 1 < line.words.length) {
-                i++;
-                output.write(line.words[i].text);
-              }
-              if (i + 1 < line.words.length) output.write(' ');
-            }
-            return output.toString();
-          })
-          .join('\n');
-    } catch (_) {
-      return 'Word-synced lyrics are saved.';
-    }
+    return lyrics.trim();
   }
 
   Future<void> _clearLyrics() async {
@@ -406,15 +369,15 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
               label: const Text('LRCLIB'),
             ),
             TextButton.icon(
-              onPressed: _fetchingSpicyLyrics ? null : _fetchSpicyLyrics,
-              icon: _fetchingSpicyLyrics
+              onPressed: _searchingLrcRed ? null : _searchLrcRed,
+              icon: _searchingLrcRed
                   ? const SizedBox(
                       width: 14,
                       height: 14,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.lyrics_rounded, size: 17),
-              label: const Text('Word-sync'),
+                  : const Icon(Icons.music_note, size: 17),
+              label: const Text('lrc.red'),
             ),
           ],
         ),
@@ -456,6 +419,7 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
             ),
           ),
         if (_lyricsMatches.isNotEmpty) _lyricsMatchList(),
+        if (_lrcRedMatches.isNotEmpty) _lrcRedMatchList(),
         const SizedBox(height: 18),
         Row(
           children: [
@@ -883,6 +847,39 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
             ),
             trailing: const Icon(Icons.download_outlined),
             onTap: () => _chooseLyrics(match),
+          ),
+      ],
+    ),
+  );
+
+  Widget _lrcRedMatchList() => DecoratedBox(
+    decoration: BoxDecoration(
+      color: BitwaveColors.panel,
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Column(
+      children: [
+        for (final match in _lrcRedMatches)
+          ListTile(
+            title: Text(
+              match.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              '${match.artist} · ${match.album.isEmpty ? 'Album unknown' : match.album} · '
+              '${match.syncType} sync · ${match.lines} lines',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: _fetchingLrcRed
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.download_outlined),
+            onTap: () => _fetchLrcRed(match.isrc),
           ),
       ],
     ),

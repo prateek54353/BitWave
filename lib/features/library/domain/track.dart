@@ -32,7 +32,6 @@ class Track {
     this.favorite = false,
     this.lyrics,
     this.motionArtworkUrl,
-    this.spicyTrackId,
   });
 
   final String id, path, title, artist, album, format;
@@ -52,7 +51,6 @@ class Track {
   final bool favorite;
   final String? lyrics;
   final String? motionArtworkUrl;
-  final String? spicyTrackId;
 
   Duration get duration => Duration(milliseconds: durationMs);
   int? get bitrateKbps => bitrate == null
@@ -105,7 +103,6 @@ class Track {
     'favorite': favorite ? 1 : 0,
     'lyrics': lyrics,
     'motion_artwork_url': motionArtworkUrl,
-    'spicy_track_id': spicyTrackId,
   };
 
   factory Track.fromMap(Map<String, Object?> m) => Track(
@@ -139,6 +136,5 @@ class Track {
     favorite: (m['favorite'] as int? ?? 0) == 1,
     lyrics: m['lyrics'] as String?,
     motionArtworkUrl: m['motion_artwork_url'] as String?,
-    spicyTrackId: m['spicy_track_id'] as String?,
   );
 }

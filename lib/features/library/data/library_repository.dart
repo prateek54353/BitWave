@@ -241,7 +241,6 @@ class LibraryRepository {
           artworkPosterPath: existing?.artworkPosterPath,
           lyrics: existing?.lyrics ?? _nonEmpty(meta?.lyrics),
           motionArtworkUrl: existing?.motionArtworkUrl,
-          spicyTrackId: existing?.spicyTrackId,
         );
         await database.upsert(track);
         imported.add(track);

@@ -1,6 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 class LyricsMatch {
   const LyricsMatch({
@@ -46,11 +50,74 @@ class LrclibProvider {
 
   final http.Client _client;
 
+  Future<Directory> _getLyricsCacheDir() async {
+    final support = await getApplicationSupportDirectory();
+    final lyricsDir = Directory(p.join(support.path, 'Lyrics'));
+    await lyricsDir.create(recursive: true);
+    return lyricsDir;
+  }
+
+  String _generateCacheKey({
+    required String title,
+    required String artist,
+    String? album,
+  }) {
+    final normalized = '${title.trim().toLowerCase()}-${artist.trim().toLowerCase()}';
+    final albumPart = album?.trim().isNotEmpty == true ? '-${album!.trim().toLowerCase()}' : '';
+    final hash = utf8.encode(normalized + albumPart);
+    return crypto.sha256.convert(hash).toString().substring(0, 16);
+  }
+
+  Future<File?> _loadCachedLrc(String cacheKey) async {
+    try {
+      final lyricsDir = await _getLyricsCacheDir();
+      final lrcFile = File(p.join(lyricsDir.path, '$cacheKey.lrc'));
+      if (await lrcFile.exists()) {
+        return lrcFile;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> _saveLrc(String cacheKey, String lyrics) async {
+    try {
+      final lyricsDir = await _getLyricsCacheDir();
+      final lrcFile = File(p.join(lyricsDir.path, '$cacheKey.lrc'));
+      await lrcFile.writeAsString(lyrics, flush: true);
+    } catch (_) {}
+  }
+
   Future<List<LyricsMatch>> search({
     required String title,
     required String artist,
     String? album,
+    bool useCache = true,
   }) async {
+    final cacheKey = _generateCacheKey(title: title, artist: artist, album: album);
+    
+    if (useCache) {
+      final cachedFile = await _loadCachedLrc(cacheKey);
+      if (cachedFile != null) {
+        try {
+          final cachedLyrics = await cachedFile.readAsString();
+          if (cachedLyrics.trim().isNotEmpty) {
+            return [
+              LyricsMatch(
+                id: -1,
+                title: title,
+                artist: artist,
+                album: album ?? '',
+                durationSeconds: 0,
+                instrumental: false,
+                plainLyrics: cachedLyrics,
+                syncedLyrics: null,
+              ),
+            ];
+          }
+        } catch (_) {}
+      }
+    }
+
     final uri = Uri.https('lrclib.net', '/api/search', {
       'track_name': title,
       'artist_name': artist,
@@ -80,11 +147,17 @@ class LrclibProvider {
       throw LrclibException('LRCLIB search failed (${response.statusCode}).');
     }
     final json = jsonDecode(response.body) as List<dynamic>;
-    return json
+    final matches = json
         .whereType<Map<String, dynamic>>()
         .map(LyricsMatch.fromJson)
         .where((match) => !match.instrumental && match.preferredLyrics != null)
         .toList(growable: false);
+    
+    if (matches.isNotEmpty && matches.first.preferredLyrics != null) {
+      await _saveLrc(cacheKey, matches.first.preferredLyrics!);
+    }
+    
+    return matches;
   }
 
   void dispose() => _client.close();

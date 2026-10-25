@@ -6,7 +6,6 @@ import 'dart:ui' show ImageFilter;
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../../app/theme/bitwave_theme.dart';
 import '../data/library_repository.dart';
@@ -15,8 +14,6 @@ import '../../player/data/bitwave_audio_handler.dart';
 import '../../artwork/data/artwork_repository.dart';
 import '../../artwork/presentation/artwork_editor_sheet.dart';
 import '../../lyrics/domain/lrc_document.dart';
-import '../../lyrics/data/spicy_lyrics_provider.dart';
-import '../../lyrics/presentation/spicy_lyrics_settings_page.dart';
 import '../../lastfm/presentation/lastfm_settings_page.dart';
 import '../../playlists/domain/playlist.dart';
 import 'track_details_page.dart';
@@ -461,8 +458,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
   static String _genreName(Track track) =>
       track.genre.isEmpty ? 'Uncategorized' : track.genre;
 
-  String _albumKey(Track track) =>
-      '${track.displayAlbum.trim().toLowerCase()}\u0000${track.albumArtist.trim().toLowerCase()}';
+  String _albumKey(Track track) {
+    final albumName = track.displayAlbum.trim().toLowerCase();
+    final artist = track.albumArtist.trim().isEmpty
+        ? track.displayArtist.trim().toLowerCase()
+        : track.albumArtist.trim().toLowerCase();
+    return '$albumName\u0000$artist';
+  }
 
   String _albumArtistLabel(Iterable<Track> tracks) {
     final albumArtist = tracks
@@ -2738,17 +2740,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
           if (mounted) setState(() {});
         },
       ),
-      _settingHeading('LYRICS PROVIDERS'),
-      _settingRow(
-        Icons.lyrics_rounded,
-        'Spicy Lyrics',
-        'API key for word-synced lyrics',
-        onTap: () => Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => const SpicyLyricsSettingsPage(),
-          ),
-        ),
-      ),
       _settingHeading('ARTWORK PROVIDERS'),
       _settingRow(
         Icons.music_note_rounded,
@@ -4100,16 +4091,6 @@ class _PlayerLyricLabelState extends State<_PlayerLyricLabel> {
     stream: widget.positionStream,
     builder: (context, snapshot) {
       final position = snapshot.data ?? Duration.zero;
-      if (widget.lyrics.startsWith('BITWAVE_SPICY_LYRICS:')) {
-        try {
-          return _spicyLyricsView(
-            SpicyLyricsResult.fromJson(widget.lyrics),
-            position,
-          );
-        } catch (_) {
-          return const SizedBox(height: 54);
-        }
-      }
       String? current;
       String? next;
       if (_document.lines.isEmpty) {
@@ -4175,88 +4156,6 @@ class _PlayerLyricLabelState extends State<_PlayerLyricLabel> {
         ),
       );
     },
-  );
-
-  Widget _spicyLyricsView(SpicyLyricsResult result, Duration position) {
-    var currentIndex = -1;
-    for (var i = 0; i < result.lines.length; i++) {
-      if (result.lines[i].start <= position) {
-        currentIndex = i;
-      } else {
-        break;
-      }
-    }
-    final current = currentIndex >= 0 ? result.lines[currentIndex] : null;
-    final next = currentIndex + 1 < result.lines.length
-        ? result.lines[currentIndex + 1]
-        : null;
-    Widget lyricLine(SpicyLyricsLine? line, {bool highlight = false}) {
-      if (line == null) return const SizedBox.shrink();
-      final spans = <InlineSpan>[];
-      for (var i = 0; i < line.words.length; i++) {
-        final start = line.words[i].start;
-        var end = line.words[i].end;
-        final text = StringBuffer(line.words[i].text);
-        while (line.words[i].partOfWord && i + 1 < line.words.length) {
-          i++;
-          text.write(line.words[i].text);
-          end = line.words[i].end;
-        }
-        final active = highlight && position >= start && position < end;
-        spans.add(
-          TextSpan(
-            text: '${spans.isEmpty ? '' : ' '}$text',
-            style: TextStyle(
-              color: active ? BitwaveColors.paper : BitwaveColors.muted,
-              fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-            ),
-          ),
-        );
-      }
-      return Text.rich(
-        TextSpan(children: spans),
-        textAlign: TextAlign.center,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 15, height: 1.2, letterSpacing: -.2),
-      );
-    }
-
-    final credits = <Widget>[
-      Text(
-        result.source == 'spicy_lyrics'
-            ? 'Spicy Lyrics'
-            : result.source.replaceAll('_', ' '),
-        style: const TextStyle(color: BitwaveColors.muted, fontSize: 9),
-      ),
-      if (result.source == 'spicy_lyrics' && result.uploader != null)
-        _creditLink('Uploader: ${result.uploader!.name}', result.uploader!.url),
-      if (result.source == 'spicy_lyrics' && result.maker != null)
-        _creditLink('Maker: ${result.maker!.name}', result.maker!.url),
-    ];
-    return SizedBox(
-      height: 68,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          lyricLine(current, highlight: true),
-          lyricLine(next),
-          Wrap(spacing: 7, alignment: WrapAlignment.center, children: credits),
-        ],
-      ),
-    );
-  }
-
-  Widget _creditLink(String label, String? url) => InkWell(
-    onTap: url == null ? null : () => launchUrl(Uri.parse(url)),
-    child: Text(
-      label,
-      style: const TextStyle(
-        color: BitwaveColors.muted,
-        fontSize: 9,
-        decoration: TextDecoration.underline,
-      ),
-    ),
   );
 }
 
