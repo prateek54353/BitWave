@@ -98,7 +98,45 @@ class LibraryDatabase {
 
   Future<List<Track>> allTracks() async {
     final db = await database;
-    final rows = await db.query('tracks', orderBy: 'title COLLATE NOCASE');
+
+    // The legacy artwork BLOB can be large and is not needed to render the
+    // library: artwork is resolved from its path/provider fields. Excluding
+    // it avoids reading and copying every embedded image on each startup.
+    final rows = await db.query(
+      'tracks',
+      columns: const [
+        'id',
+        'path',
+        'title',
+        'artist',
+        'album',
+        'album_artist',
+        'genre',
+        'duration_ms',
+        'format',
+        'file_size',
+        'modified_ms',
+        'year',
+        'track_number',
+        'disc_number',
+        'sample_rate',
+        'bitrate',
+        'embedded_artwork_path',
+        'custom_artwork_path',
+        'provider_artwork_url',
+        'provider_artwork_id',
+        'artwork_aspect_ratio',
+        'artwork_focus_x',
+        'artwork_focus_y',
+        'artwork_fit',
+        'animated_artwork',
+        'artwork_poster_path',
+        'favorite',
+        'lyrics',
+        'motion_artwork_url',
+      ],
+      orderBy: 'title COLLATE NOCASE',
+    );
     return rows.map(Track.fromMap).toList(growable: false);
   }
 
