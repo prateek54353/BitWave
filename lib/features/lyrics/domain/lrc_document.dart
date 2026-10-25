@@ -119,6 +119,7 @@ class LrcDocument {
 
   String? lineAt(Duration position) {
     final index = lineIndexAt(position);
-    return index < 0 ? '' : lines[index].text;
+    if (index < 0) return null;
+    return lines[index].text;
   }
 }
