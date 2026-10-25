@@ -5,12 +5,23 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:flutter/services.dart';
 
+import '../../../core/database/library_database.dart';
 import '../../library/domain/track.dart';
 import '../../lastfm/data/lastfm_scrobbler.dart';
 
 class BitwaveAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
-  BitwaveAudioHandler() {
+  final AudioPlayer _player = AudioPlayer(
+    handleInterruptions: true,
+    maxSkipsOnError: 3,
+  );
+  final LastFmScrobbler lastFm;
+  List<Track> _tracks = [];
+  AudioPlayer get player => _player;
+  List<Track> get tracks => List.unmodifiable(_tracks);
+
+  BitwaveAudioHandler({LibraryDatabase? db})
+    : lastFm = LastFmScrobbler(db: db) {
     unawaited(lastFm.initialize());
     _player.playbackEventStream.listen((_) => _publishState());
     _player.currentIndexStream.listen((index) {
@@ -28,16 +39,14 @@ class BitwaveAudioHandler extends BaseAudioHandler
     _player.durationStream.listen((_) => _publishState());
     _player.shuffleModeEnabledStream.listen((_) => _publishState());
     _player.loopModeStream.listen((_) => _publishState());
+    _player.processingStateStream.listen((state) {
+      if (state == ProcessingState.completed &&
+          _player.loopMode == LoopMode.one) {
+        lastFm.onPosition(Duration.zero);
+      }
+      _publishState();
+    });
   }
-
-  final AudioPlayer _player = AudioPlayer(
-    handleInterruptions: true,
-    maxSkipsOnError: 3,
-  );
-  final LastFmScrobbler lastFm = LastFmScrobbler();
-  List<Track> _tracks = [];
-  AudioPlayer get player => _player;
-  List<Track> get tracks => List.unmodifiable(_tracks);
 
   static MediaItem _item(Track track) => MediaItem(
     id: track.id,
@@ -57,8 +66,8 @@ class BitwaveAudioHandler extends BaseAudioHandler
         : Uri.tryParse(track.providerArtworkUrl!);
   }
 
-  Future<void> playTracks(List<Track> tracks, {int initialIndex = 0}) async {
-    if (tracks.isEmpty) return;
+  Future<String?> playTracks(List<Track> tracks, {int initialIndex = 0}) async {
+    if (tracks.isEmpty) return null;
     if (Platform.isAndroid) {
       try {
         await const MethodChannel('org.bitwave.dev/notifications')
@@ -69,12 +78,22 @@ class BitwaveAudioHandler extends BaseAudioHandler
         // Notification permission is managed by the host platform.
       }
     }
-    _tracks = List.of(tracks);
-    final items = _tracks.map(_item).toList(growable: false);
-    queue.add(items);
+    final validTracks = <Track>[];
+    final validItems = <MediaItem>[];
+    for (final track in tracks) {
+      if (await File(track.path).exists()) {
+        validTracks.add(track);
+        validItems.add(_item(track));
+      }
+    }
+    if (validTracks.isEmpty) {
+      return 'No playable files found';
+    }
+    _tracks = validTracks;
+    queue.add(validItems);
     try {
       await _player.setAudioSources(
-        items
+        validItems
             .asMap()
             .entries
             .map(
@@ -92,22 +111,41 @@ class BitwaveAudioHandler extends BaseAudioHandler
           errorMessage: 'This file could not be played: $error',
         ),
       );
-      rethrow;
+      return 'Could not play track: $error';
     }
+    return null;
   }
 
-  Future<void> addToQueue(Track track, {bool playNext = false}) async {
-    final insertion = playNext
-        ? (_player.currentIndex ?? -1) + 1
-        : _tracks.length;
+  Future<String?> addToQueue(Track track, {bool playNext = false}) async {
+    if (!await File(track.path).exists()) {
+      return 'File not found: ${track.title}';
+    }
+    int insertion;
+    if (playNext) {
+      if (_player.shuffleModeEnabled) {
+        // When shuffle is enabled, insert at currentIndex+1 in the shuffled order
+        final currentIndex = _player.currentIndex ?? -1;
+        insertion = currentIndex + 1;
+      } else {
+        insertion = (_player.currentIndex ?? -1) + 1;
+      }
+    } else {
+      insertion = _tracks.length;
+    }
     final index = insertion.clamp(0, _tracks.length);
     _tracks.insert(index, track);
-    await _player.insertAudioSource(
-      index,
-      AudioSource.file(track.path, tag: _item(track)),
-    );
+    try {
+      await _player.insertAudioSource(
+        index,
+        AudioSource.file(track.path, tag: _item(track)),
+      );
+    } catch (error) {
+      _tracks.removeAt(index);
+      return 'Could not add track: $error';
+    }
     queue.add(_tracks.map(_item).toList(growable: false));
     _publishState();
+    return null;
   }
 
   Future<void> removeFromQueue(int index) async {
@@ -138,6 +176,26 @@ class BitwaveAudioHandler extends BaseAudioHandler
     _publishState();
   }
 
+  Future<void> keepOnlyCurrent() async {
+    final currentIndex = _player.currentIndex;
+    if (currentIndex == null ||
+        currentIndex < 0 ||
+        currentIndex >= _tracks.length) {
+      return;
+    }
+    final toRemove = <int>[];
+    for (var i = 0; i < _tracks.length; i++) {
+      if (i != currentIndex) toRemove.add(i);
+    }
+    toRemove.sort((a, b) => b.compareTo(a));
+    for (final index in toRemove) {
+      await _player.removeAudioSourceAt(index);
+      _tracks.removeAt(index);
+    }
+    queue.add(_tracks.map(_item).toList(growable: false));
+    _publishState();
+  }
+
   void updateTrackMetadata(Track track) {
     final index = _tracks.indexWhere((item) => item.id == track.id);
     if (index < 0) return;
@@ -165,6 +223,12 @@ class BitwaveAudioHandler extends BaseAudioHandler
   @override
   Future<void> pause() => _player.pause();
   @override
+  Future<void> stop() async {
+    await _player.stop();
+    await super.stop();
+  }
+
+  @override
   Future<void> seek(Duration position) => _player.seek(position);
   @override
   Future<void> skipToNext() => _player.seekToNext();
@@ -173,6 +237,28 @@ class BitwaveAudioHandler extends BaseAudioHandler
   @override
   Future<void> skipToQueueItem(int index) =>
       _player.seek(Duration.zero, index: index);
+  @override
+  Future<void> setShuffleMode(AudioServiceShuffleMode shuffleMode) async {
+    await _player.setShuffleModeEnabled(
+      shuffleMode == AudioServiceShuffleMode.all,
+    );
+  }
+
+  @override
+  Future<void> setRepeatMode(AudioServiceRepeatMode repeatMode) async {
+    final loopMode = switch (repeatMode) {
+      AudioServiceRepeatMode.one => LoopMode.one,
+      AudioServiceRepeatMode.all => LoopMode.all,
+      AudioServiceRepeatMode.none => LoopMode.off,
+      AudioServiceRepeatMode.group => LoopMode.all,
+    };
+    await _player.setLoopMode(loopMode);
+  }
+
+  @override
+  Future<void> setSpeed(double speed) async {
+    await _player.setSpeed(speed);
+  }
 
   void _publishState() {
     final event = _player.playbackEvent;

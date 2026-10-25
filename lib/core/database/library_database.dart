@@ -13,13 +13,14 @@ class LibraryDatabase {
     final dir = await getApplicationSupportDirectory();
     _database = await openDatabase(
       p.join(dir.path, 'bitwave_library.db'),
-      version: 8,
+      version: 11,
       onCreate: (db, _) async {
         await db.execute('''CREATE TABLE tracks (
           id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
           artist TEXT NOT NULL, album TEXT NOT NULL, album_artist TEXT NOT NULL,
           genre TEXT NOT NULL, duration_ms INTEGER NOT NULL, format TEXT NOT NULL,
-          file_size INTEGER NOT NULL, modified_ms INTEGER NOT NULL, year INTEGER,
+          file_size INTEGER NOT NULL, modified_ms INTEGER NOT NULL, added_ms INTEGER,
+          year INTEGER,
           track_number INTEGER, disc_number INTEGER, sample_rate INTEGER, bitrate INTEGER,
           artwork BLOB, embedded_artwork_path TEXT, custom_artwork_path TEXT,
           provider_artwork_url TEXT, provider_artwork_id TEXT,
@@ -36,6 +37,7 @@ class LibraryDatabase {
           'CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
         );
         await _createPlaylistTables(db);
+        await _createPlaysTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -89,7 +91,17 @@ class LibraryDatabase {
           await db.execute('ALTER TABLE tracks ADD COLUMN spicy_track_id TEXT');
         }
         if (oldVersion < 8) {
-          await db.execute('ALTER TABLE tracks DROP COLUMN spicy_track_id');
+          // Leave spicy_track_id column unused to avoid ALTER TABLE DROP COLUMN
+          // which requires SQLite 3.35+
+        }
+        if (oldVersion < 9) {
+          await db.execute('ALTER TABLE tracks ADD COLUMN added_ms INTEGER');
+        }
+        if (oldVersion < 10) {
+          await db.execute('ALTER TABLE playlists ADD COLUMN image_path TEXT');
+        }
+        if (oldVersion < 11) {
+          await _createPlaysTable(db);
         }
       },
     );
@@ -100,6 +112,57 @@ class LibraryDatabase {
     final db = await database;
     final rows = await db.query('tracks', orderBy: 'title COLLATE NOCASE');
     return rows.map(Track.fromMap).toList(growable: false);
+  }
+
+  Future<List<Track>> allTracksWithPlayStats() async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT t.*,
+             (SELECT COUNT(*) FROM plays p WHERE p.track_id = t.id) AS play_count,
+             (SELECT MAX(p.played_ms) FROM plays p WHERE p.track_id = t.id) AS last_played_ms
+      FROM tracks t
+      ORDER BY t.title COLLATE NOCASE
+    ''');
+    return rows
+        .map((row) {
+          final track = Track.fromMap(row);
+          return Track(
+            id: track.id,
+            path: track.path,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            durationMs: track.durationMs,
+            format: track.format,
+            fileSize: track.fileSize,
+            modifiedMs: track.modifiedMs,
+            addedMs: track.addedMs,
+            albumArtist: track.albumArtist,
+            genre: track.genre,
+            year: track.year,
+            trackNumber: track.trackNumber,
+            discNumber: track.discNumber,
+            sampleRate: track.sampleRate,
+            bitrate: track.bitrate,
+            artwork: track.artwork,
+            embeddedArtworkPath: track.embeddedArtworkPath,
+            customArtworkPath: track.customArtworkPath,
+            providerArtworkUrl: track.providerArtworkUrl,
+            providerArtworkId: track.providerArtworkId,
+            artworkAspectRatio: track.artworkAspectRatio,
+            artworkFocusX: track.artworkFocusX,
+            artworkFocusY: track.artworkFocusY,
+            artworkFit: track.artworkFit,
+            animatedArtwork: track.animatedArtwork,
+            artworkPosterPath: track.artworkPosterPath,
+            favorite: track.favorite,
+            lyrics: track.lyrics,
+            motionArtworkUrl: track.motionArtworkUrl,
+            playCount: (row['play_count'] as int?) ?? 0,
+            lastPlayedMs: row['last_played_ms'] as int?,
+          );
+        })
+        .toList(growable: false);
   }
 
   Future<void> upsert(Track track) async => (await database).insert(
@@ -282,7 +345,8 @@ class LibraryDatabase {
     await db.execute('''CREATE TABLE IF NOT EXISTS playlists (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-      created_ms INTEGER NOT NULL
+      created_ms INTEGER NOT NULL,
+      image_path TEXT
     )''');
     await db.execute('''CREATE TABLE IF NOT EXISTS playlist_tracks (
       playlist_id TEXT NOT NULL,
@@ -293,6 +357,25 @@ class LibraryDatabase {
     )''');
     await db.execute(
       'CREATE INDEX IF NOT EXISTS playlist_tracks_order ON playlist_tracks(playlist_id, position)',
+    );
+  }
+
+  static Future<void> _createPlaysTable(DatabaseExecutor db) async {
+    await db.execute('''CREATE TABLE IF NOT EXISTS plays (
+      id TEXT PRIMARY KEY,
+      track_id TEXT NOT NULL,
+      played_ms INTEGER NOT NULL,
+      listened_ms INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      artist TEXT NOT NULL,
+      album TEXT NOT NULL,
+      album_artist TEXT NOT NULL
+    )''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS plays_track ON plays(track_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS plays_played ON plays(played_ms)',
     );
   }
 
@@ -324,6 +407,15 @@ class LibraryDatabase {
     await (await database).update(
       'playlists',
       {'name': normalized},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> setPlaylistImage(String id, String? imagePath) async {
+    await (await database).update(
+      'playlists',
+      {'image_path': imagePath},
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -427,5 +519,50 @@ class LibraryDatabase {
         whereArgs: [playlistId, rows[index]['track_id']],
       );
     }
+  }
+
+  Future<void> recordPlay({
+    required String trackId,
+    required int playedMs,
+    required int listenedMs,
+    required String title,
+    required String artist,
+    required String album,
+    required String albumArtist,
+  }) async {
+    final id = DateTime.now().microsecondsSinceEpoch.toString();
+    await (await database).insert('plays', {
+      'id': id,
+      'track_id': trackId,
+      'played_ms': playedMs,
+      'listened_ms': listenedMs,
+      'title': title,
+      'artist': artist,
+      'album': album,
+      'album_artist': albumArtist,
+    });
+  }
+
+  Future<int> getPlayCount(String trackId) async {
+    final result = Sqflite.firstIntValue(
+      await (await database).rawQuery(
+        'SELECT COUNT(*) FROM plays WHERE track_id = ?',
+        [trackId],
+      ),
+    );
+    return result ?? 0;
+  }
+
+  Future<int?> getLastPlayed(String trackId) async {
+    final rows = await (await database).query(
+      'plays',
+      columns: ['played_ms'],
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+      orderBy: 'played_ms DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['played_ms'] as int?;
   }
 }

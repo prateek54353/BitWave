@@ -12,7 +12,7 @@ Future<void> main() async {
   final database = LibraryDatabase();
   final library = LibraryRepository(database);
   final audio = await AudioService.init(
-    builder: BitwaveAudioHandler.new,
+    builder: () => BitwaveAudioHandler(db: database),
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'org.bitwave.dev.audio',
       androidNotificationChannelName: 'Bitwave playback',

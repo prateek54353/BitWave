@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../../../core/database/library_database.dart';
 import '../../library/domain/track.dart';
 
 /// Last.fm native-app authentication and scrobbling integration.
@@ -23,7 +24,9 @@ class LastFmScrobbler {
   static const _tokenName = 'lastfm.auth_token';
 
   final http.Client _client;
-  LastFmScrobbler({http.Client? client}) : _client = client ?? http.Client();
+  final LibraryDatabase? _db;
+  LastFmScrobbler({http.Client? client, this._db})
+      : _client = client ?? http.Client();
 
   String? _sessionKey;
   String? _username;
@@ -35,6 +38,7 @@ class LastFmScrobbler {
   Duration _heard = Duration.zero;
   DateTime? _startedAt;
   bool _sentForCurrentTrack = false;
+  Duration? _lastTrackDuration;
 
   Future<void> initialize() => _initialization ??= _loadStored();
 
@@ -116,6 +120,7 @@ class LastFmScrobbler {
     _lastPosition = null;
     _startedAt = DateTime.now();
     _sentForCurrentTrack = false;
+    _lastTrackDuration = track?.duration;
     if (track != null && _playing) unawaited(_updateNowPlaying(track));
   }
 
@@ -132,12 +137,20 @@ class LastFmScrobbler {
     final previous = _lastPosition;
     _lastPosition = position;
     final track = _track;
-    if (!_playing ||
-        track == null ||
-        _sentForCurrentTrack ||
-        previous == null) {
+    if (!_playing || track == null || previous == null) {
       return;
     }
+    // Detect repeat-one loop: position wraps back near 0 after reaching the end
+    if (_lastTrackDuration != null &&
+        previous > _lastTrackDuration! * 0.9 &&
+        position < const Duration(seconds: 5)) {
+      // Track looped back to start - reset scrobble state for repeat-one
+      _heard = Duration.zero;
+      _startedAt = DateTime.now();
+      _sentForCurrentTrack = false;
+      return;
+    }
+    if (_sentForCurrentTrack) return;
     final delta = position - previous;
     // Count only natural playback progression, excluding seeks and buffering jumps.
     if (delta > Duration.zero && delta <= const Duration(seconds: 3)) {
@@ -150,6 +163,21 @@ class LastFmScrobbler {
         : const Duration(minutes: 4);
     if (_heard >= threshold) {
       _sentForCurrentTrack = true;
+      final playedMs = DateTime.now().millisecondsSinceEpoch;
+      final listenedMs = _heard.inMilliseconds;
+      if (_db != null) {
+        unawaited(
+          _db.recordPlay(
+            trackId: track.id,
+            playedMs: playedMs,
+            listenedMs: listenedMs,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            albumArtist: track.albumArtist,
+          ),
+        );
+      }
       unawaited(
         _scrobble(
           track,

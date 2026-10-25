@@ -11,6 +11,7 @@ class Track {
     required this.format,
     required this.fileSize,
     required this.modifiedMs,
+    this.addedMs,
     this.albumArtist = '',
     this.genre = '',
     this.year,
@@ -32,11 +33,14 @@ class Track {
     this.favorite = false,
     this.lyrics,
     this.motionArtworkUrl,
+    this.playCount,
+    this.lastPlayedMs,
   });
 
   final String id, path, title, artist, album, format;
   final String albumArtist, genre;
   final int durationMs, fileSize, modifiedMs;
+  final int? addedMs;
   final int? year, trackNumber, discNumber, sampleRate, bitrate;
   final Uint8List? artwork;
   final String? embeddedArtworkPath;
@@ -51,6 +55,8 @@ class Track {
   final bool favorite;
   final String? lyrics;
   final String? motionArtworkUrl;
+  final int? playCount;
+  final int? lastPlayedMs;
 
   Duration get duration => Duration(milliseconds: durationMs);
   int? get bitrateKbps => bitrate == null
@@ -60,6 +66,9 @@ class Track {
       : bitrate;
   String get displayArtist => artist.isEmpty ? 'Unknown artist' : artist;
   String get displayAlbum => album.isEmpty ? 'Unknown album' : album;
+  DateTime? get lastPlayed => lastPlayedMs == null
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(lastPlayedMs!);
   String? get artworkPath {
     if (customArtworkPath != null) {
       return animatedArtwork ? artworkPosterPath : customArtworkPath;
@@ -84,6 +93,7 @@ class Track {
     'format': format,
     'file_size': fileSize,
     'modified_ms': modifiedMs,
+    'added_ms': addedMs,
     'year': year,
     'track_number': trackNumber,
     'disc_number': discNumber,
@@ -117,6 +127,7 @@ class Track {
     format: m['format'] as String,
     fileSize: m['file_size'] as int,
     modifiedMs: m['modified_ms'] as int,
+    addedMs: m['added_ms'] as int?,
     year: m['year'] as int?,
     trackNumber: m['track_number'] as int?,
     discNumber: m['disc_number'] as int?,
