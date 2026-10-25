@@ -13,7 +13,7 @@ import '../domain/track.dart';
 import '../../player/data/bitwave_audio_handler.dart';
 import '../../artwork/data/artwork_repository.dart';
 import '../../artwork/presentation/artwork_editor_sheet.dart';
-import '../../lyrics/domain/lrc_document.dart';
+import '../../lyrics/presentation/word_synced_lyrics.dart';
 import '../../lastfm/presentation/lastfm_settings_page.dart';
 import '../../playlists/domain/playlist.dart';
 import 'track_details_page.dart';
@@ -3589,9 +3589,10 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                       ),
                       SizedBox(height: constraints.maxHeight * .09),
                       if (track?.lyrics?.trim().isNotEmpty == true)
-                        _PlayerLyricLabel(
+                        WordSyncedLyrics(
                           lyrics: track!.lyrics!,
                           positionStream: widget.audio.player.positionStream,
+                          onSeek: (position) => widget.audio.player.seek(position),
                         )
                       else
                         const SizedBox(height: 24),
@@ -4044,130 +4045,6 @@ class _ArtworkPlaceholder extends StatelessWidget {
         color: BitwaveColors.accent,
       ),
     ),
-  );
-}
-
-class _PlayerLyricLabel extends StatefulWidget {
-  const _PlayerLyricLabel({required this.lyrics, required this.positionStream});
-
-  final String lyrics;
-  final Stream<Duration> positionStream;
-
-  @override
-  State<_PlayerLyricLabel> createState() => _PlayerLyricLabelState();
-}
-
-class _PlayerLyricLabelState extends State<_PlayerLyricLabel> {
-  late LrcDocument _document;
-  late String? _plainPreview;
-
-  @override
-  void initState() {
-    super.initState();
-    _parse();
-  }
-
-  @override
-  void didUpdateWidget(covariant _PlayerLyricLabel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.lyrics != widget.lyrics) _parse();
-  }
-
-  void _parse() {
-    if (widget.lyrics.startsWith('BITWAVE_SPICY_LYRICS:')) {
-      _document = const LrcDocument([]);
-      _plainPreview = null;
-      return;
-    }
-    _document = LrcDocument.parse(widget.lyrics);
-    final plain = widget.lyrics
-        .split(RegExp(r'\r?\n'))
-        .where(
-          (line) =>
-              line.trim().isNotEmpty &&
-              !RegExp(r'^\s*\[[a-z]+:', caseSensitive: false).hasMatch(line),
-        )
-        .map(
-          (line) => line
-              .replaceAll(RegExp(r'\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]'), '')
-              .trim(),
-        )
-        .where((line) => line.isNotEmpty)
-        .take(2)
-        .join('\n');
-    _plainPreview = plain.isEmpty ? null : plain;
-  }
-
-  @override
-  Widget build(BuildContext context) => StreamBuilder<Duration>(
-    stream: widget.positionStream,
-    builder: (context, snapshot) {
-      final position = snapshot.data ?? Duration.zero;
-      String? current;
-      String? next;
-      if (_document.lines.isEmpty) {
-        final lines = (_plainPreview ?? '').split('\n');
-        current = lines.isEmpty ? null : lines.first;
-        next = lines.length > 1 ? lines[1] : null;
-      } else {
-        var index = -1;
-        var low = 0;
-        var high = _document.lines.length - 1;
-        while (low <= high) {
-          final middle = (low + high) >> 1;
-          if (_document.lines[middle].at <= position) {
-            index = middle;
-            low = middle + 1;
-          } else {
-            high = middle - 1;
-          }
-        }
-        if (index >= 0) current = _document.lines[index].text;
-        if (index + 1 < _document.lines.length) {
-          next = _document.lines[index + 1].text;
-        }
-      }
-      if ((current == null || current.isEmpty) &&
-          (next == null || next.isEmpty)) {
-        return const SizedBox(height: 48);
-      }
-      return SizedBox(
-        height: 54,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (current != null && current.isNotEmpty)
-                Text(
-                  current,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    height: 1.2,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: -.2,
-                  ),
-                ),
-              if (next != null && next.isNotEmpty)
-                Text(
-                  next,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    height: 1.2,
-                    color: BitwaveColors.muted,
-                    letterSpacing: -.1,
-                  ),
-                ),
-            ],
-          ),
-        ),
-      );
-    },
   );
 }
 
