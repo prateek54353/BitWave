@@ -52,10 +52,7 @@ class _LyricsShareCardState extends State<LyricsShareCard> {
 
       if (mounted) {
         await SharePlus.instance.share(
-          ShareParams(
-            files: [XFile(file.path)],
-            text: 'Shared from Bitwave',
-          ),
+          ShareParams(files: [XFile(file.path)], text: 'Shared from Bitwave'),
         );
       }
 
