@@ -13,7 +13,7 @@ class LibraryDatabase {
     final dir = await getApplicationSupportDirectory();
     _database = await openDatabase(
       p.join(dir.path, 'bitwave_library.db'),
-      version: 11,
+      version: 12,
       onCreate: (db, _) async {
         await db.execute('''CREATE TABLE tracks (
           id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
@@ -28,7 +28,8 @@ class LibraryDatabase {
           artwork_focus_y REAL NOT NULL DEFAULT 0, artwork_fit TEXT NOT NULL DEFAULT 'crop',
           animated_artwork INTEGER NOT NULL DEFAULT 0, artwork_poster_path TEXT,
           favorite INTEGER NOT NULL DEFAULT 0, lyrics TEXT,
-          motion_artwork_url TEXT)''');
+          motion_artwork_url TEXT, bit_depth INTEGER, channels INTEGER,
+          codec TEXT, is_lossless INTEGER NOT NULL DEFAULT 0)''');
         await db.execute(
           'CREATE INDEX tracks_album ON tracks(album, album_artist)',
         );
@@ -102,6 +103,14 @@ class LibraryDatabase {
         }
         if (oldVersion < 11) {
           await _createPlaysTable(db);
+        }
+        if (oldVersion < 12) {
+          await db.execute('ALTER TABLE tracks ADD COLUMN bit_depth INTEGER');
+          await db.execute('ALTER TABLE tracks ADD COLUMN channels INTEGER');
+          await db.execute('ALTER TABLE tracks ADD COLUMN codec TEXT');
+          await db.execute(
+            'ALTER TABLE tracks ADD COLUMN is_lossless INTEGER NOT NULL DEFAULT 0',
+          );
         }
       },
     );
@@ -565,4 +574,22 @@ class LibraryDatabase {
     if (rows.isEmpty) return null;
     return rows.first['played_ms'] as int?;
   }
+
+  Future<void> updateSignalInfo({
+    required String id,
+    int? bitDepth,
+    int? channels,
+    String? codec,
+    bool? isLossless,
+  }) async => (await database).update(
+    'tracks',
+    {
+      'bit_depth': bitDepth,
+      'channels': channels,
+      'codec': codec,
+      'is_lossless': isLossless,
+    },
+    where: 'id = ?',
+    whereArgs: [id],
+  );
 }

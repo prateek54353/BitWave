@@ -26,7 +26,7 @@ class LastFmScrobbler {
   final http.Client _client;
   final LibraryDatabase? _db;
   LastFmScrobbler({http.Client? client, this._db})
-      : _client = client ?? http.Client();
+    : _client = client ?? http.Client();
 
   String? _sessionKey;
   String? _username;

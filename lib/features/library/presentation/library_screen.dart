@@ -3729,10 +3729,7 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                         },
                       ),
                       const SizedBox(height: 10),
-                      _OutputDeviceLabel(
-                        formatInfo:
-                            '${track?.format ?? 'Audio'}${track?.bitrateKbps == null ? '' : '  ·  ${track!.bitrateKbps} kbps'}',
-                      ),
+                      _OutputDeviceLabel(formatInfo: _compactFormatInfo(track)),
                       const SizedBox(height: 4),
                     ],
                   );
@@ -3747,6 +3744,22 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
 
   static String _format(Duration d) =>
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+
+  static String _compactFormatInfo(Track? track) {
+    final parts = <String>[];
+    if (track?.codec != null) {
+      parts.add(track!.codec!);
+      if (track.isLossless) {
+        parts.add('LOSSLESS');
+      }
+    } else {
+      parts.add(track?.format ?? 'Audio');
+    }
+    if (track?.bitrateKbps != null) {
+      parts.add('${track!.bitrateKbps} kbps');
+    }
+    return parts.join('  ·  ');
+  }
 
   Widget _landscapeNowPlaying({
     required BoxConstraints constraints,
@@ -3951,8 +3964,7 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                 const SizedBox(height: 13),
                 Center(
                   child: _OutputDeviceLabel(
-                    formatInfo:
-                        '${track?.format ?? 'Audio'}${track?.bitrateKbps == null ? '' : '  ·  ${track!.bitrateKbps} kbps'}',
+                    formatInfo: _compactFormatInfo(track),
                   ),
                 ),
                 const Spacer(),

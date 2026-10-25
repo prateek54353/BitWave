@@ -478,6 +478,15 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
         _panel(
           children: [
             _technicalLine('Format', _track.format),
+            _technicalLine('Codec', _track.codec ?? '—'),
+            _technicalLine(
+              'Bit depth',
+              _track.bitDepth == null ? '—' : '${_track.bitDepth} bit',
+            ),
+            _technicalLine(
+              'Channels',
+              _track.channels == null ? '—' : '${_track.channels}',
+            ),
             _technicalLine('Duration', _format(_track.duration)),
             _technicalLine(
               'Bitrate',
@@ -490,6 +499,14 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
                   : '${(_track.sampleRate! / 1000).toStringAsFixed(1)} kHz',
             ),
             _technicalLine('File size', _size(_track.fileSize)),
+            if (_track.codec != null)
+              _technicalLine(
+                'Quality',
+                _track.isLossless ? 'LOSSLESS' : 'LOSSY',
+                valueColor: _track.isLossless
+                    ? BitwaveColors.accent
+                    : BitwaveColors.paper,
+              ),
           ],
         ),
       ],
@@ -684,20 +701,24 @@ class _TrackDetailsPageState extends State<TrackDetailsPage> {
     ),
   );
 
-  Widget _technicalLine(String label, String value) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
-    child: Row(
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: const TextStyle(color: BitwaveColors.muted, fontSize: 13),
-          ),
+  Widget _technicalLine(String label, String value, {Color? valueColor}) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(
+                  color: BitwaveColors.muted,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            Text(value, style: TextStyle(fontSize: 13, color: valueColor)),
+          ],
         ),
-        Text(value, style: const TextStyle(fontSize: 13)),
-      ],
-    ),
-  );
+      );
   Widget _panel({required List<Widget> children}) => DecoratedBox(
     decoration: BoxDecoration(
       color: BitwaveColors.panel,

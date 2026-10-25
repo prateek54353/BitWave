@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../../core/database/library_database.dart';
 import '../domain/track.dart';
+import 'audio_format_parser.dart';
 
 class LibraryRepository {
   LibraryRepository(this.database);
@@ -190,6 +191,7 @@ class LibraryRepository {
         } catch (_) {
           /* Untagged files remain playable. */
         }
+        final formatInfo = AudioFormatParser.parseFile(file);
         final stat = await file.stat();
         final embeddedPicture = meta?.pictures
             .where((p) => p.bytes.isNotEmpty)
@@ -241,6 +243,10 @@ class LibraryRepository {
           artworkPosterPath: existing?.artworkPosterPath,
           lyrics: existing?.lyrics ?? _nonEmpty(meta?.lyrics),
           motionArtworkUrl: existing?.motionArtworkUrl,
+          bitDepth: formatInfo.bitDepth ?? existing?.bitDepth,
+          channels: formatInfo.channels ?? existing?.channels,
+          codec: formatInfo.codec ?? existing?.codec,
+          isLossless: formatInfo.isLossless,
         );
         await database.upsert(track);
         imported.add(track);

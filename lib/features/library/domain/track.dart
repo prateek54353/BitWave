@@ -35,6 +35,10 @@ class Track {
     this.motionArtworkUrl,
     this.playCount,
     this.lastPlayedMs,
+    this.bitDepth,
+    this.channels,
+    this.codec,
+    this.isLossless = false,
   });
 
   final String id, path, title, artist, album, format;
@@ -57,6 +61,10 @@ class Track {
   final String? motionArtworkUrl;
   final int? playCount;
   final int? lastPlayedMs;
+  final int? bitDepth;
+  final int? channels;
+  final String? codec;
+  final bool isLossless;
 
   Duration get duration => Duration(milliseconds: durationMs);
   int? get bitrateKbps => bitrate == null
@@ -113,6 +121,10 @@ class Track {
     'favorite': favorite ? 1 : 0,
     'lyrics': lyrics,
     'motion_artwork_url': motionArtworkUrl,
+    'bit_depth': bitDepth,
+    'channels': channels,
+    'codec': codec,
+    'is_lossless': isLossless ? 1 : 0,
   };
 
   factory Track.fromMap(Map<String, Object?> m) => Track(
@@ -147,5 +159,9 @@ class Track {
     favorite: (m['favorite'] as int? ?? 0) == 1,
     lyrics: m['lyrics'] as String?,
     motionArtworkUrl: m['motion_artwork_url'] as String?,
+    bitDepth: m['bit_depth'] as int?,
+    channels: m['channels'] as int?,
+    codec: m['codec'] as String?,
+    isLossless: (m['is_lossless'] as int? ?? 0) == 1,
   );
 }
