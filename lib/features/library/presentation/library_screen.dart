@@ -3592,6 +3592,7 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                         WordSyncedLyrics(
                           lyrics: track!.lyrics!,
                           positionStream: widget.audio.player.positionStream,
+                          onSeek: (position) => widget.audio.player.seek(position),
                         )
                       else
                         const SizedBox(height: 24),
