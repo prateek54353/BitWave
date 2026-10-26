@@ -260,11 +260,9 @@ class _LyricsShareCardSheetState extends State<LyricsShareCardSheet> {
         .toList(growable: false);
   }
 
-  List<String> get _selectedLines => _selectedIndices
-      .toList()
-      ..sort();
+  List<int> get _selectedIndicesSorted => _selectedIndices.toList()..sort();
 
-  List<String> get _selectedText => _selectedLines
+  List<String> get _selectedText => _selectedIndicesSorted
       .map((index) => _lines[index].text)
       .toList(growable: false);
 
