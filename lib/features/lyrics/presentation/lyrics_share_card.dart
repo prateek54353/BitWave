@@ -246,14 +246,14 @@ class _LyricsShareCardSheetState extends State<LyricsShareCardSheet> {
     }
 
     return source
-        .split(RegExp(r'\\r?\\n'))
+        .split(RegExp(r'\r?\n'))
         .map((line) => line
-            .replaceAll(RegExp(r'\\[\\d{1,3}:\\d{2}(?:[.:]\\d{1,3})?\\]'), '')
+            .replaceAll(RegExp(r'\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]'), '')
             .trim())
         .where((line) =>
             line.isNotEmpty &&
             !RegExp(
-              r'^\\s*\\[(?:ar|ti|al|by|re|ve|length|la|tool|kana|au|id|offset):',
+              r'^\s*\[(?:ar|ti|al|by|re|ve|length|la|tool|kana|au|id|offset):',
               caseSensitive: false,
             ).hasMatch(line))
         .map((line) => _ShareLyricLine(line, null))
