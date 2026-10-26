@@ -744,6 +744,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   child: _NowPlayingScreen(
                     audio: widget.audio,
                     artworkStyle: _artworkStyle,
+                    lyricsSharingEnabled: _lyricsSharingEnabled,
                     onOpenDetails: _openTrackDetails,
                     onAddToPlaylist: _addTrackToPlaylist,
                     onOpenMenu: _openMenu,
@@ -3378,6 +3379,7 @@ class _NowPlayingScreen extends StatefulWidget {
   const _NowPlayingScreen({
     required this.audio,
     required this.artworkStyle,
+    required this.lyricsSharingEnabled,
     required this.onOpenDetails,
     required this.onAddToPlaylist,
     required this.onOpenMenu,
@@ -3385,6 +3387,7 @@ class _NowPlayingScreen extends StatefulWidget {
 
   final BitwaveAudioHandler audio;
   final String artworkStyle;
+  final bool lyricsSharingEnabled;
   final ValueChanged<Track> onOpenDetails;
   final ValueChanged<Track> onAddToPlaylist;
   final VoidCallback onOpenMenu;
@@ -3741,6 +3744,8 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                       if (track?.lyrics?.trim().isNotEmpty == true)
                         WordSyncedLyrics(
                           lyrics: track!.lyrics!,
+                          track: track!,
+                          lyricsSharingEnabled: widget.lyricsSharingEnabled,
                           positionStream: widget.audio.player.positionStream,
                           onSeek: (position) =>
                               widget.audio.player.seek(position),

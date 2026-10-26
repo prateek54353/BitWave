@@ -10,294 +10,196 @@ import '../domain/lrc_document.dart';
 
 enum CardAspectRatio { square, portrait }
 
-enum CardBackground { dark, gradient, blur }
+enum CardBackground { gradient, dark, warm }
 
-class LyricsShareCard extends StatefulWidget {
+/// A render-only card. The share action lives in the sheet so it is not
+/// accidentally included in the exported image.
+class LyricsShareCard extends StatelessWidget {
   const LyricsShareCard({
     super.key,
     required this.track,
-    required this.lyrics,
     required this.selectedLines,
-    required this.lyricsSource,
-    this.aspectRatio = CardAspectRatio.portrait,
+    this.aspectRatio = CardAspectRatio.square,
     this.background = CardBackground.gradient,
   });
 
   final Track track;
-  final String lyrics;
   final List<String> selectedLines;
-  final String lyricsSource;
   final CardAspectRatio aspectRatio;
   final CardBackground background;
 
   @override
-  State<LyricsShareCard> createState() => _LyricsShareCardState();
-}
-
-class _LyricsShareCardState extends State<LyricsShareCard> {
-  final ScreenshotController _screenshotController = ScreenshotController();
-  bool _sharing = false;
-
-  Future<void> _shareCard() async {
-    if (_sharing) return;
-    setState(() => _sharing = true);
-
-    try {
-      final image = await _screenshotController.capture();
-      if (image == null) return;
-
-      final tempDir = await Directory.systemTemp.createTemp();
-      final file = File('${tempDir.path}/lyrics_card.png');
-      await file.writeAsBytes(image);
-
-      if (mounted) {
-        await SharePlus.instance.share(
-          ShareParams(files: [XFile(file.path)], text: 'Shared from Bitwave'),
-        );
-      }
-
-      await file.delete();
-      await tempDir.delete();
-    } catch (e) {
-      debugPrint('Error sharing card: $e');
-    } finally {
-      if (mounted) setState(() => _sharing = false);
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final width = widget.aspectRatio == CardAspectRatio.square ? 400.0 : 360.0;
-    final height = widget.aspectRatio == CardAspectRatio.square ? 400.0 : 640.0;
+    final width = aspectRatio == CardAspectRatio.square ? 420.0 : 360.0;
+    final height = aspectRatio == CardAspectRatio.square ? 420.0 : 640.0;
 
-    return Screenshot(
-      controller: _screenshotController,
-      child: Container(
+    return RepaintBoundary(
+      child: SizedBox(
         width: width,
         height: height,
-        decoration: _getBackgroundDecoration(),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: _gradient,
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Padding(
+            padding: EdgeInsets.all(aspectRatio == CardAspectRatio.square ? 28 : 30),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
-                    _buildArtwork(),
-                    const SizedBox(height: 20),
-                    _buildTrackInfo(),
-                    const SizedBox(height: 24),
-                    _buildLyrics(),
+                    Container(
+                      width: 26,
+                      height: 26,
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.graphic_eq_rounded,
+                          color: Color(0xFF101010), size: 17),
+                    ),
+                    const SizedBox(width: 9),
+                    const Text(
+                      'BITWAVE',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 2.2,
+                      ),
+                    ),
+                    const Spacer(),
+                    const Icon(Icons.format_quote_rounded,
+                        color: Colors.white70, size: 27),
                   ],
                 ),
-              ),
-              _buildFooter(),
-            ],
+                const SizedBox(height: 24),
+                Expanded(
+                  child: Center(
+                    child: SingleChildScrollView(
+                      physics: const NeverScrollableScrollPhysics(),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (var i = 0; i < selectedLines.length; i++)
+                            Padding(
+                              padding: EdgeInsets.only(
+                                  bottom: i == selectedLines.length - 1 ? 0 : 12),
+                              child: Text(
+                                selectedLines[i],
+                                softWrap: true,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: _lyricFontSize,
+                                  height: 1.16,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: -.5,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    _artwork(),
+                    const SizedBox(width: 13),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            track.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              height: 1.15,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            track.displayArtist,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  BoxDecoration _getBackgroundDecoration() {
-    return switch (widget.background) {
-      CardBackground.dark => BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [const Color(0xFF1A1A1A), const Color(0xFF0D0D0D)],
-        ),
-      ),
-      CardBackground.gradient => BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            const Color(0xFF2D1B4E),
-            const Color(0xFF1A1A2E),
-            const Color(0xFF0D0D0D),
-          ],
-        ),
-      ),
-      CardBackground.blur => BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            const Color(0xFF4A90E2).withValues(alpha: 0.3),
-            const Color(0xFF9013FE).withValues(alpha: 0.3),
-            const Color(0xFF0D0D0D),
-          ],
-        ),
-      ),
-    };
+  double get _lyricFontSize {
+    if (selectedLines.length >= 4) return 23;
+    if (selectedLines.length == 3) return 27;
+    return aspectRatio == CardAspectRatio.square ? 31 : 34;
   }
 
-  Widget _buildArtwork() {
-    final artworkPath = widget.track.artworkPath;
-    if (artworkPath != null) {
+  LinearGradient get _gradient => switch (background) {
+        CardBackground.gradient => const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF7356D8), Color(0xFF402A80), Color(0xFF151327)],
+          ),
+        CardBackground.dark => const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF343434), Color(0xFF151515), Color(0xFF080808)],
+          ),
+        CardBackground.warm => const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFB45C3B), Color(0xFF773D4E), Color(0xFF241B34)],
+          ),
+      };
+
+  Widget _artwork() {
+    final path = track.artworkPath;
+    if (path != null && path.isNotEmpty) {
       return ClipRRect(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(8),
         child: Image.file(
-          File(artworkPath),
-          width: 80,
-          height: 80,
+          File(path),
+          width: 48,
+          height: 48,
           fit: BoxFit.cover,
-          errorBuilder: (error, stackTrace, stack) => _fallbackArtwork(),
+          errorBuilder: (_, __, ___) => _fallbackArtwork(),
         ),
       );
     }
     return _fallbackArtwork();
   }
 
-  Widget _fallbackArtwork() {
-    return Container(
-      width: 80,
-      height: 80,
-      decoration: BoxDecoration(
-        color: const Color(0xFF2A2A2A),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: const Icon(
-        Icons.music_note_rounded,
-        size: 40,
-        color: BitwaveColors.muted,
-      ),
-    );
-  }
-
-  Widget _buildTrackInfo() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          widget.track.title,
-          style: const TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.bold,
-            color: Colors.white,
-            height: 1.2,
-          ),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
+  Widget _fallbackArtwork() => Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: .13),
+          borderRadius: BorderRadius.circular(8),
         ),
-        const SizedBox(height: 8),
-        Text(
-          widget.track.displayArtist,
-          style: const TextStyle(
-            fontSize: 16,
-            color: BitwaveColors.muted,
-            height: 1.2,
-          ),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        if (widget.track.displayAlbum.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          Text(
-            widget.track.displayAlbum,
-            style: const TextStyle(
-              fontSize: 14,
-              color: BitwaveColors.muted,
-              height: 1.2,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildLyrics() {
-    if (widget.selectedLines.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Expanded(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Divider(color: Color(0xFF3A3A3A)),
-          const SizedBox(height: 16),
-          ...widget.selectedLines.map(
-            (line) => Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text(
-                line,
-                style: const TextStyle(
-                  fontSize: 18,
-                  color: Colors.white,
-                  height: 1.4,
-                  fontWeight: FontWeight.w500,
-                ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Source: ${widget.lyricsSource}',
-            style: const TextStyle(
-              fontSize: 11,
-              color: BitwaveColors.muted,
-              fontStyle: FontStyle.italic,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFooter() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 6,
-              height: 6,
-              decoration: const BoxDecoration(
-                color: BitwaveColors.accent,
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 8),
-            const Text(
-              'BITWAVE',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 2,
-                color: BitwaveColors.muted,
-              ),
-            ),
-          ],
-        ),
-        if (_sharing)
-          const SizedBox(
-            width: 16,
-            height: 16,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(BitwaveColors.accent),
-            ),
-          )
-        else
-          IconButton(
-            onPressed: _shareCard,
-            icon: const Icon(Icons.share_rounded, color: BitwaveColors.accent),
-            iconSize: 20,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-          ),
-      ],
-    );
-  }
+        child: const Icon(Icons.music_note_rounded,
+            color: Colors.white, size: 26),
+      );
 }
 
 class LyricsShareCardSheet extends StatefulWidget {
@@ -317,224 +219,348 @@ class LyricsShareCardSheet extends StatefulWidget {
 }
 
 class _LyricsShareCardSheetState extends State<LyricsShareCardSheet> {
-  final List<String> _selectedLines = [];
-  CardAspectRatio _aspectRatio = CardAspectRatio.portrait;
+  final ScreenshotController _screenshotController = ScreenshotController();
+  final Set<int> _selectedIndices = <int>{};
+  late final List<_ShareLyricLine> _lines;
+  CardAspectRatio _aspectRatio = CardAspectRatio.square;
   CardBackground _background = CardBackground.gradient;
-  late LrcDocument _document;
+  bool _sharing = false;
 
   @override
   void initState() {
     super.initState();
-    _document = LrcDocument.parse(widget.lyrics);
+    _lines = _parseLines(widget.lyrics);
+    // Like Spotify's lyric sharing flow, start with a small ready-to-share
+    // selection instead of presenting an empty card.
+    if (_lines.isNotEmpty) _selectedIndices.add(0);
+    if (_lines.length > 1) _selectedIndices.add(1);
   }
 
-  void _toggleLine(String line) {
+  List<_ShareLyricLine> _parseLines(String source) {
+    final document = LrcDocument.parse(source);
+    if (document.lines.isNotEmpty) {
+      return document.lines
+          .map((line) => _ShareLyricLine(line.text.trim(), line.at))
+          .where((line) => line.text.isNotEmpty)
+          .toList(growable: false);
+    }
+
+    return source
+        .split(RegExp(r'\r?\n'))
+        .map((line) => line
+            .replaceAll(RegExp(r'\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]'), '')
+            .trim())
+        .where((line) =>
+            line.isNotEmpty &&
+            !RegExp(
+              r'^\s*\[(?:ar|ti|al|by|re|ve|length|la|tool|kana|au|id|offset):',
+              caseSensitive: false,
+            ).hasMatch(line))
+        .map((line) => _ShareLyricLine(line, null))
+        .toList(growable: false);
+  }
+
+  List<int> get _selectedIndicesSorted => _selectedIndices.toList()..sort();
+
+  List<String> get _selectedText => _selectedIndicesSorted
+      .map((index) => _lines[index].text)
+      .toList(growable: false);
+
+  void _toggleLine(int index) {
     setState(() {
-      if (_selectedLines.contains(line)) {
-        _selectedLines.remove(line);
-      } else if (_selectedLines.length < 4) {
-        _selectedLines.add(line);
+      if (_selectedIndices.contains(index)) {
+        _selectedIndices.remove(index);
+      } else if (_selectedIndices.length < 5) {
+        _selectedIndices.add(index);
       }
     });
   }
 
-  List<String> _getConsecutiveLines() {
-    if (_selectedLines.isEmpty) return [];
-    final sortedLines =
-        _document.lines.where((l) => _selectedLines.contains(l.text)).toList()
-          ..sort((a, b) => a.at.compareTo(b.at));
-    return sortedLines.map((l) => l.text).toList();
+  Future<void> _shareCard() async {
+    if (_sharing || _selectedIndices.isEmpty) return;
+    setState(() => _sharing = true);
+
+    Directory? tempDir;
+    try {
+      final image = await _screenshotController.capture(pixelRatio: 3);
+      if (image == null) {
+        throw StateError('Could not render the lyric card.');
+      }
+
+      tempDir = await Directory.systemTemp.createTemp('bitwave_lyrics_');
+      final file = File('${tempDir.path}/bitwave_lyrics.png');
+      await file.writeAsBytes(image, flush: true);
+
+      if (!mounted) return;
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'image/png')],
+          text: '“${_selectedText.join(' ')}” — ${widget.track.title} · ${widget.track.displayArtist}\nShared from BitWave',
+        ),
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Could not share lyric card: $error\n$stackTrace');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not create the lyric card. Try again.')),
+        );
+      }
+    } finally {
+      if (tempDir != null) {
+        try {
+          if (await tempDir.exists()) await tempDir.delete(recursive: true);
+        } catch (_) {
+          // The platform share sheet may still be reading the image.
+        }
+      }
+      if (mounted) setState(() => _sharing = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.85,
-      decoration: const BoxDecoration(
-        color: Color(0xFF090A0B),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        children: [
-          _buildHeader(),
-          Expanded(
-            child: Row(
-              children: [
-                Expanded(child: _buildLineSelector()),
-                const VerticalDivider(color: BitwaveColors.line),
-                Expanded(child: _buildPreview()),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final cardWidth = _aspectRatio == CardAspectRatio.square ? 420.0 : 360.0;
+    final cardHeight = _aspectRatio == CardAspectRatio.square ? 420.0 : 640.0;
 
-  Widget _buildHeader() {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Share Lyrics',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+    return SafeArea(
+      top: false,
+      child: Container(
+        height: screenHeight * .92,
+        decoration: const BoxDecoration(
+          color: Color(0xFF101112),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        child: Column(
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 38,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(8),
               ),
-              IconButton(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.close_rounded),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 16, 12),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Share lyrics',
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800)),
+                        SizedBox(height: 4),
+                        Text('Choose a line and make it yours',
+                            style: TextStyle(
+                                color: Colors.white60, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded, color: Colors.white),
+                  ),
+                ],
               ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Text(
-                '${_selectedLines.length}/4 lines selected',
-                style: const TextStyle(
-                  color: BitwaveColors.muted,
-                  fontSize: 13,
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                children: [
+                  _ratioButton(CardAspectRatio.square, 'Square'),
+                  const SizedBox(width: 8),
+                  _ratioButton(CardAspectRatio.portrait, 'Story'),
+                  const Spacer(),
+                  Text('${_selectedIndices.length}/5',
+                      style: const TextStyle(
+                          color: Colors.white70, fontWeight: FontWeight.w700)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            Expanded(
+              flex: 5,
+              child: Center(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final scale = [
+                      constraints.maxWidth / cardWidth,
+                      constraints.maxHeight / cardHeight,
+                      1.0,
+                    ].reduce((a, b) => a < b ? a : b);
+                    return Screenshot(
+                      controller: _screenshotController,
+                      child: Transform.scale(
+                        scale: scale,
+                        child: LyricsShareCard(
+                          track: widget.track,
+                          selectedLines: _selectedText.isEmpty
+                              ? const ['Select a lyric below']
+                              : _selectedText,
+                          aspectRatio: _aspectRatio,
+                          background: _background,
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
-              const Spacer(),
-              _aspectRatioToggle(),
-              const SizedBox(width: 12),
-              _backgroundToggle(),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _aspectRatioToggle() {
-    return SegmentedButton<CardAspectRatio>(
-      segments: const [
-        ButtonSegment(
-          value: CardAspectRatio.portrait,
-          label: Text('9:16', style: TextStyle(fontSize: 12)),
-          icon: Icon(Icons.portrait_rounded, size: 18),
-        ),
-        ButtonSegment(
-          value: CardAspectRatio.square,
-          label: Text('1:1', style: TextStyle(fontSize: 12)),
-          icon: Icon(Icons.crop_square_rounded, size: 18),
-        ),
-      ],
-      selected: {_aspectRatio},
-      onSelectionChanged: (Set<CardAspectRatio> selected) {
-        setState(() => _aspectRatio = selected.first);
-      },
-      style: ButtonStyle(
-        backgroundColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return BitwaveColors.accent.withValues(alpha: 0.2);
-          }
-          return const Color(0xFF2A2A2A);
-        }),
-        foregroundColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return BitwaveColors.accent;
-          }
-          return Colors.white;
-        }),
-      ),
-    );
-  }
-
-  Widget _backgroundToggle() {
-    return SegmentedButton<CardBackground>(
-      segments: const [
-        ButtonSegment(
-          value: CardBackground.gradient,
-          label: Text('Gradient', style: TextStyle(fontSize: 12)),
-        ),
-        ButtonSegment(
-          value: CardBackground.dark,
-          label: Text('Dark', style: TextStyle(fontSize: 12)),
-        ),
-        ButtonSegment(
-          value: CardBackground.blur,
-          label: Text('Blur', style: TextStyle(fontSize: 12)),
-        ),
-      ],
-      selected: {_background},
-      onSelectionChanged: (Set<CardBackground> selected) {
-        setState(() => _background = selected.first);
-      },
-      style: ButtonStyle(
-        backgroundColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return BitwaveColors.accent.withValues(alpha: 0.2);
-          }
-          return const Color(0xFF2A2A2A);
-        }),
-        foregroundColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return BitwaveColors.accent;
-          }
-          return Colors.white;
-        }),
-      ),
-    );
-  }
-
-  Widget _buildLineSelector() {
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _document.lines.length,
-      itemBuilder: (context, index) {
-        final line = _document.lines[index];
-        final isSelected = _selectedLines.contains(line.text);
-        return ListTile(
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 4,
-          ),
-          title: Text(
-            line.text,
-            style: TextStyle(
-              color: isSelected ? BitwaveColors.accent : Colors.white,
-              fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
             ),
-          ),
-          subtitle: Text(
-            _formatDuration(line.at),
-            style: const TextStyle(color: BitwaveColors.muted, fontSize: 11),
-          ),
-          onTap: () => _toggleLine(line.text),
-          selected: isSelected,
-          tileColor: isSelected
-              ? BitwaveColors.accent.withValues(alpha: 0.1)
-              : Colors.transparent,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        );
-      },
-    );
-  }
-
-  Widget _buildPreview() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      child: Center(
-        child: LyricsShareCard(
-          track: widget.track,
-          lyrics: widget.lyrics,
-          selectedLines: _getConsecutiveLines(),
-          lyricsSource: widget.lyricsSource,
-          aspectRatio: _aspectRatio,
-          background: _background,
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 38,
+              child: ListView(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                scrollDirection: Axis.horizontal,
+                children: [
+                  _backgroundChip(CardBackground.gradient, 'Violet'),
+                  _backgroundChip(CardBackground.dark, 'Midnight'),
+                  _backgroundChip(CardBackground.warm, 'Warm'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              flex: 3,
+              child: _lines.isEmpty
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Text(
+                          'No shareable lyrics were found for this track.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white60),
+                        ),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                      itemCount: _lines.length,
+                      separatorBuilder: (_, __) =>
+                          const Divider(height: 1, color: Colors.white10),
+                      itemBuilder: (context, index) {
+                        final line = _lines[index];
+                        final selected = _selectedIndices.contains(index);
+                        return ListTile(
+                          dense: true,
+                          contentPadding:
+                              const EdgeInsets.symmetric(horizontal: 8),
+                          leading: Icon(
+                            selected
+                                ? Icons.check_circle_rounded
+                                : Icons.circle_outlined,
+                            color: selected
+                                ? BitwaveColors.accent
+                                : Colors.white38,
+                          ),
+                          title: Text(
+                            line.text,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: selected ? Colors.white : Colors.white70,
+                              fontWeight:
+                                  selected ? FontWeight.w700 : FontWeight.w500,
+                            ),
+                          ),
+                          subtitle: line.at == null
+                              ? null
+                              : Text(_formatDuration(line.at!),
+                                  style: const TextStyle(
+                                      color: Colors.white38, fontSize: 11)),
+                          onTap: () => _toggleLine(index),
+                        );
+                      },
+                    ),
+            ),
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                  20, 8, 20, 12 + MediaQuery.viewInsetsOf(context).bottom),
+              child: SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: FilledButton.icon(
+                  onPressed:
+                      _sharing || _selectedIndices.isEmpty ? null : _shareCard,
+                  icon: _sharing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.share_rounded),
+                  label: Text(_sharing ? 'Preparing image…' : 'Share lyric card'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: BitwaveColors.accent,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.white12,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  String _formatDuration(Duration d) {
-    final minutes = d.inMinutes;
-    final seconds = d.inSeconds % 60;
+  Widget _ratioButton(CardAspectRatio ratio, String label) {
+    final selected = _aspectRatio == ratio;
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => setState(() => _aspectRatio = ratio),
+      selectedColor: BitwaveColors.accent.withValues(alpha: .22),
+      backgroundColor: Colors.white.withValues(alpha: .06),
+      labelStyle: TextStyle(
+        color: selected ? BitwaveColors.accent : Colors.white70,
+        fontWeight: FontWeight.w700,
+      ),
+      side: BorderSide(
+        color: selected ? BitwaveColors.accent : Colors.white12,
+      ),
+    );
+  }
+
+  Widget _backgroundChip(CardBackground background, String label) {
+    final selected = _background == background;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected,
+        onSelected: (_) => setState(() => _background = background),
+        selectedColor: BitwaveColors.accent.withValues(alpha: .22),
+        backgroundColor: Colors.white.withValues(alpha: .06),
+        labelStyle: TextStyle(
+          color: selected ? BitwaveColors.accent : Colors.white70,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+        ),
+        side: BorderSide(
+          color: selected ? BitwaveColors.accent : Colors.white12,
+        ),
+      ),
+    );
+  }
+
+  String _formatDuration(Duration duration) {
+    final minutes = duration.inMinutes;
+    final seconds = duration.inSeconds % 60;
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
+}
+
+class _ShareLyricLine {
+  const _ShareLyricLine(this.text, this.at);
+
+  final String text;
+  final Duration? at;
 }
