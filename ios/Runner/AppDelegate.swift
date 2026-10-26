@@ -137,12 +137,8 @@ private final class BitwaveFolderImportPlugin: NSObject, FlutterPlugin, UIDocume
 
 private final class BitwaveEqualizerPlugin: NSObject, FlutterPlugin {
   private static let channelName = "org.bitwave.dev/equalizer"
-  private var audioSession: AVAudioSession?
-  private var audioEngine: AVAudioEngine?
-  private var equalizer: AVAudioUnitEQ?
-  private var bands: [AVAudioUnitEQFilterParameters] = []
   private var requestedEnabled = false
-  private var requestedGains = Array(repeating: Float(0), count: 10)
+  private var requestedGains = Array(repeating: 0.0, count: 10)
 
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: channelName, binaryMessenger: registrar.messenger())
@@ -152,102 +148,34 @@ private final class BitwaveEqualizerPlugin: NSObject, FlutterPlugin {
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "setEnabled":
-      setEnabled(call, result)
+      guard let args = call.arguments as? [String: Any],
+            let enabled = args["enabled"] as? Bool else {
+        result(FlutterError(code: "invalid_args", message: "Expected an enabled boolean", details: nil))
+        return
+      }
+      requestedEnabled = enabled
+      // The current player is owned by just_audio. AVAudioUnitEQ has no
+      // supported way to attach itself to that private player graph. Keep
+      // settings stable and report the platform limitation explicitly rather
+      // than spinning up an unrelated, silent AVAudioEngine.
+      result(FlutterError(
+        code: "equalizer_unavailable",
+        message: "The iOS player backend does not expose its audio graph for native equalizer insertion.",
+        details: nil
+      ))
     case "setBands":
-      setBands(call, result)
+      guard let args = call.arguments as? [String: Any],
+            let values = args["bands"] as? [Double],
+            values.count == 10 else {
+        result(FlutterError(code: "invalid_bands", message: "Expected 10 band values", details: nil))
+        return
+      }
+      requestedGains = values.map { max(-12.0, min(12.0, $0)) }
+      result(nil)
     case "getBands":
-      getBands(result)
+      result(["enabled": requestedEnabled, "bands": requestedGains])
     default:
       result(FlutterMethodNotImplemented)
     }
-  }
-
-  private func setupEqualizer() throws {
-    if audioEngine != nil, equalizer != nil { return }
-
-    let session = AVAudioSession.sharedInstance()
-    try session.setCategory(.playback, mode: .default, options: [.allowAirPlay, .allowBluetoothA2DP])
-    try session.setActive(true)
-
-    let engine = AVAudioEngine()
-    let player = AVAudioPlayerNode()
-    let eq = AVAudioUnitEQ(numberOfBands: 10)
-    eq.globalGain = 0.0
-
-    let frequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-    bands = eq.bands
-    for (index, band) in bands.enumerated() {
-      band.filterType = .parametric
-      band.frequency = frequencies[index]
-      band.bandwidth = 1.0
-      band.gain = requestedGains[index]
-      band.bypass = false
-    }
-
-    engine.attach(player)
-    engine.attach(eq)
-    engine.connect(player, to: eq, format: nil)
-    engine.connect(eq, to: engine.mainMixerNode, format: nil)
-
-    try engine.start()
-    audioSession = session
-    audioEngine = engine
-    equalizer = eq
-  }
-
-  private func setEnabled(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
-    guard let args = call.arguments as? [String: Any],
-          let enabled = args["enabled"] as? Bool else {
-      result(FlutterError(code: "invalid_args", message: "Expected an enabled boolean", details: nil))
-      return
-    }
-
-    requestedEnabled = enabled
-    if enabled {
-      do {
-        try setupEqualizer()
-        bands.indices.forEach { bands[$0].gain = requestedGains[$0] }
-        result(nil)
-      } catch {
-        result(FlutterError(code: "equalizer_setup_failed", message: "Could not start the equalizer audio engine: \(error.localizedDescription)", details: nil))
-      }
-    } else {
-      audioEngine?.stop()
-      audioEngine = nil
-      equalizer = nil
-      bands.removeAll()
-      audioSession = nil
-      result(nil)
-    }
-  }
-
-  private func setBands(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
-    guard let args = call.arguments as? [String: Any],
-          let bandValues = args["bands"] as? [Double],
-          bandValues.count == 10 else {
-      result(FlutterError(code: "invalid_bands", message: "Expected 10 band values", details: nil))
-      return
-    }
-
-    requestedGains = bandValues.map { Float(max(-12, min(12, $0))) }
-    if requestedEnabled {
-      do {
-        try setupEqualizer()
-        for index in bands.indices {
-          bands[index].gain = requestedGains[index]
-        }
-      } catch {
-        result(FlutterError(code: "equalizer_setup_failed", message: "Could not apply equalizer bands: \(error.localizedDescription)", details: nil))
-        return
-      }
-    }
-    result(nil)
-  }
-
-  private func getBands(_ result: @escaping FlutterResult) {
-    result([
-      "enabled": requestedEnabled,
-      "bands": requestedGains.map { Double($0) }
-    ])
   }
 }
