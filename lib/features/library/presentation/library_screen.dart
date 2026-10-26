@@ -154,8 +154,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
           .map((e) => double.tryParse(e) ?? 0.0)
           .toList();
       if (bandValues.length == 10) {
-        await widget.audio.equalizer.setEnabled(true);
-        await widget.audio.equalizer.setBands(bandValues);
+        try {
+          await widget.audio.equalizer.setBands(bandValues);
+          await widget.audio.equalizer.setEnabled(true);
+        } catch (error) {
+          // An unavailable native effect must not break library startup.
+          debugPrint('Bitwave equalizer restore unavailable: $error');
+        }
       }
     }
   }
