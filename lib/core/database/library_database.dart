@@ -212,11 +212,21 @@ class LibraryDatabase {
         .toList(growable: false);
   }
 
-  Future<void> upsert(Track track) async => (await database).insert(
-    'tracks',
-    track.toMap(),
-    conflictAlgorithm: ConflictAlgorithm.replace,
-  );
+  Future<void> upsert(Track track) async {
+    final db = await database;
+    // Avoid ConflictAlgorithm.replace: SQLite REPLACE deletes the old row
+    // before inserting the new one, discarding fields omitted from the import.
+    final values = track.toMap()..remove('id');
+    final updated = await db.update(
+      'tracks',
+      values,
+      where: 'id = ?',
+      whereArgs: [track.id],
+    );
+    if (updated == 0) {
+      await db.insert('tracks', track.toMap());
+    }
+  }
 
   Future<bool> containsTrack(String id) async {
     final rows = await (await database).query(

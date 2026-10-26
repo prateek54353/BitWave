@@ -211,25 +211,35 @@ class LibraryRepository {
           final artFile = File(embeddedPath);
           await artFile.parent.create(recursive: true);
           await artFile.writeAsBytes(embedded, flush: true);
+        } else {
+          // A rescan may fail to re-extract a picture after an app update.
+          // Keep the previous file when it is still present rather than
+          // clearing the artwork reference during the metadata refresh.
+          final previousPath = existing?.embeddedArtworkPath;
+          if (previousPath != null && await File(previousPath).exists()) {
+            embeddedPath = previousPath;
+          }
         }
         final track = Track(
           id: stableId,
           path: file.path,
           title: _nonEmpty(meta?.title) ?? p.basenameWithoutExtension(name),
-          artist: _nonEmpty(meta?.artist) ?? '',
-          album: _nonEmpty(meta?.album) ?? '',
-          albumArtist: _nonEmpty(meta?.albumArtist) ?? '',
-          genre: meta?.genres.join(', ') ?? '',
-          durationMs: meta?.duration?.inMilliseconds ?? 0,
+          artist: _nonEmpty(meta?.artist) ?? existing?.artist ?? '',
+          album: _nonEmpty(meta?.album) ?? existing?.album ?? '',
+          albumArtist: _nonEmpty(meta?.albumArtist) ?? existing?.albumArtist ?? '',
+          genre: meta?.genres.isNotEmpty == true
+              ? meta!.genres.join(', ')
+              : existing?.genre ?? '',
+          durationMs: meta?.duration?.inMilliseconds ?? existing?.durationMs ?? 0,
           format: p.extension(name).replaceFirst('.', '').toUpperCase(),
           fileSize: stat.size,
           modifiedMs: stat.modified.millisecondsSinceEpoch,
-          year: meta?.year?.year,
-          trackNumber: meta?.trackNumber,
+          year: meta?.year?.year ?? existing?.year,
+          trackNumber: meta?.trackNumber ?? existing?.trackNumber,
           discNumber: meta?.discNumber ?? existing?.discNumber,
-          sampleRate: meta?.sampleRate,
-          bitrate: meta?.bitrate,
-          artwork: embedded,
+          sampleRate: meta?.sampleRate ?? existing?.sampleRate,
+          bitrate: meta?.bitrate ?? existing?.bitrate,
+          artwork: embedded ?? existing?.artwork,
           embeddedArtworkPath: embeddedPath,
           favorite: existing?.favorite ?? false,
           customArtworkPath: existing?.customArtworkPath,
@@ -241,12 +251,12 @@ class LibraryRepository {
           artworkFit: existing?.artworkFit ?? 'crop',
           animatedArtwork: existing?.animatedArtwork ?? false,
           artworkPosterPath: existing?.artworkPosterPath,
-          lyrics: existing?.lyrics ?? _nonEmpty(meta?.lyrics),
+          lyrics: _nonEmpty(meta?.lyrics) ?? existing?.lyrics,
           motionArtworkUrl: existing?.motionArtworkUrl,
           bitDepth: formatInfo.bitDepth ?? existing?.bitDepth,
           channels: formatInfo.channels ?? existing?.channels,
           codec: formatInfo.codec ?? existing?.codec,
-          isLossless: formatInfo.isLossless,
+          isLossless: formatInfo.isLossless || (existing?.isLossless ?? false),
         );
         await database.upsert(track);
         imported.add(track);
