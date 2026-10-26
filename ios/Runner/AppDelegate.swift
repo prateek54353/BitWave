@@ -153,16 +153,20 @@ private final class BitwaveEqualizerPlugin: NSObject, FlutterPlugin {
         result(FlutterError(code: "invalid_args", message: "Expected an enabled boolean", details: nil))
         return
       }
-      requestedEnabled = enabled
       // The current player is owned by just_audio. AVAudioUnitEQ has no
-      // supported way to attach itself to that private player graph. Keep
-      // settings stable and report the platform limitation explicitly rather
-      // than spinning up an unrelated, silent AVAudioEngine.
-      result(FlutterError(
-        code: "equalizer_unavailable",
-        message: "The iOS player backend does not expose its audio graph for native equalizer insertion.",
-        details: nil
-      ))
+      // supported way to attach itself to that private player graph. Keep the
+      // effect disabled and report the limitation rather than showing a false
+      // enabled state or starting an unrelated, silent audio engine.
+      requestedEnabled = false
+      if enabled {
+        result(FlutterError(
+          code: "equalizer_unavailable",
+          message: "The iOS player backend does not expose its audio graph for native equalizer insertion.",
+          details: nil
+        ))
+      } else {
+        result(nil)
+      }
     case "setBands":
       guard let args = call.arguments as? [String: Any],
             let values = args["bands"] as? [Double],
