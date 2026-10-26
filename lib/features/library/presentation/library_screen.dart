@@ -1481,7 +1481,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         : Icons.add_rounded,
                   ),
                 )
-              else if (_section != LibrarySection.playlists)
+              else if (_section != LibrarySection.playlists && _section != LibrarySection.albums)
                 PopupMenuButton<String>(
                   tooltip: 'Sort library',
                   icon: const Icon(
@@ -1493,8 +1493,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       switch (value) {
                         case 'title_asc':
                           _tracks.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+                          break;
                         case 'title_desc':
                           _tracks.sort((a, b) => b.title.toLowerCase().compareTo(a.title.toLowerCase()));
+                          break;
                       }
                     });
                   },
