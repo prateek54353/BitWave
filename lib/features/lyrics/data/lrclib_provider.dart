@@ -118,18 +118,19 @@ class LrclibProvider {
       }
     }
 
+    // LRCLIB's public search endpoint is read-only and does not require an
+    // application-ID header. Send a conventional User-Agent and JSON Accept
+    // header; unsupported custom headers can be rejected by intermediaries.
     final uri = Uri.https('lrclib.net', '/api/search', {
-      'track_name': title,
-      'artist_name': artist,
+      'track_name': title.trim(),
+      'artist_name': artist.trim(),
       if (album?.trim().isNotEmpty == true) 'album_name': album!.trim(),
     });
     final response = await _client
         .get(
           uri,
-          headers: {
-            'User-Agent':
-                'Bitwave/1.0.0 (https://github.com/prateek54353/BitWave)',
-            'Lrclib-App-Id': 'Bitwave/1.0.0',
+          headers: const {
+            'User-Agent': 'Bitwave/1.0.0 (https://github.com/prateek54353/BitWave)',
             'Accept': 'application/json',
           },
         )
