@@ -3741,7 +3741,7 @@ class _NowPlayingScreenState extends State<_NowPlayingScreen> {
                       if (track?.lyrics?.trim().isNotEmpty == true)
                         WordSyncedLyrics(
                           lyrics: track!.lyrics!,
-                          track: track,
+                          track: track!,
                           lyricsSharingEnabled: _lyricsSharingEnabled,
                           positionStream: widget.audio.player.positionStream,
                           onSeek: (position) =>
