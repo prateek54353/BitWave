@@ -3144,9 +3144,7 @@ class _AlbumDetailPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final album = tracks.first;
     final artists = tracks.map((track) => track.displayArtist).toSet();
-    final artist = album.albumArtist.trim().isNotEmpty
-        ? album.albumArtist
-        : artists.length == 1
+    final artist = artists.length == 1
         ? artists.first
         : artists.isEmpty
         ? 'Unknown artist'
