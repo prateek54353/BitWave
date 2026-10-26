@@ -1433,7 +1433,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
               if (_section == LibrarySection.albums) ...[
                 PopupMenuButton<String>(
                   tooltip: 'Sort albums',
-                  icon: const Icon(Icons.sort_rounded, color: BitwaveColors.muted),
+                  icon: const Icon(
+                    Icons.sort_rounded,
+                    color: BitwaveColors.muted,
+                  ),
                   onSelected: _setAlbumSort,
                   itemBuilder: (_) => [
                     CheckedPopupMenuItem(
@@ -1481,7 +1484,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         : Icons.add_rounded,
                   ),
                 )
-              else if (_section != LibrarySection.playlists && _section != LibrarySection.albums)
+              else if (_section != LibrarySection.playlists &&
+                  _section != LibrarySection.albums)
                 PopupMenuButton<String>(
                   tooltip: 'Sort library',
                   icon: const Icon(
@@ -1492,10 +1496,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     setState(() {
                       switch (value) {
                         case 'title_asc':
-                          _tracks.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+                          _tracks.sort(
+                            (a, b) => a.title.toLowerCase().compareTo(
+                              b.title.toLowerCase(),
+                            ),
+                          );
                           break;
                         case 'title_desc':
-                          _tracks.sort((a, b) => b.title.toLowerCase().compareTo(a.title.toLowerCase()));
+                          _tracks.sort(
+                            (a, b) => b.title.toLowerCase().compareTo(
+                              a.title.toLowerCase(),
+                            ),
+                          );
                           break;
                       }
                     });
@@ -2124,7 +2136,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
               Expanded(
                 child: Stack(
                   children: [
-                    Positioned.fill(child: Center(child: _artwork(t, 158, radius: 7))),
+                    Positioned.fill(
+                      child: Center(child: _artwork(t, 158, radius: 7)),
+                    ),
                     Positioned(
                       top: 6,
                       right: 6,
@@ -2133,7 +2147,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         borderRadius: BorderRadius.circular(20),
                         child: IconButton(
                           visualDensity: VisualDensity.compact,
-                          constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+                          constraints: const BoxConstraints.tightFor(
+                            width: 34,
+                            height: 34,
+                          ),
                           padding: EdgeInsets.zero,
                           tooltip: pinned ? 'Unpin album' : 'Pin album to top',
                           onPressed: () => _toggleAlbumPinned(e.key),
