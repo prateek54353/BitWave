@@ -86,6 +86,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Set<String> _folderKeys = const {};
   Map<String, Track> _tracksById = const {};
   bool _lyricsSharingEnabled = false;
+  String _albumSort = 'title_asc';
+  Set<String> _pinnedAlbumKeys = <String>{};
 
   @override
   void initState() {
@@ -94,12 +96,53 @@ class _LibraryScreenState extends State<LibraryScreen> {
     unawaited(_refresh());
     _startIOSFolderMonitoring();
     _loadLyricsSharingSetting();
+    _loadAlbumPreferences();
     _loadEqualizerSettings();
   }
 
   Future<void> _loadLyricsSharingSetting() async {
     final enabled = await widget.library.database.getLyricsSharingEnabled();
     if (mounted) setState(() => _lyricsSharingEnabled = enabled);
+  }
+
+  Future<void> _loadAlbumPreferences() async {
+    final values = await Future.wait([
+      widget.library.database.getSetting('album_sort'),
+      widget.library.database.getSetting('pinned_album_keys'),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _albumSort = _validAlbumSort(values[0]);
+      _pinnedAlbumKeys = (values[1] ?? '')
+          .split('\n')
+          .where((key) => key.isNotEmpty)
+          .toSet();
+    });
+  }
+
+  String _validAlbumSort(String? value) => const {
+        'title_asc',
+        'title_desc',
+        'year_asc',
+        'year_desc',
+      }.contains(value)
+      ? value!
+      : 'title_asc';
+
+  Future<void> _setAlbumSort(String value) async {
+    final sort = _validAlbumSort(value);
+    setState(() => _albumSort = sort);
+    await widget.library.database.setSetting('album_sort', sort);
+  }
+
+  Future<void> _toggleAlbumPinned(String albumKey) async {
+    final next = Set<String>.of(_pinnedAlbumKeys);
+    if (!next.add(albumKey)) next.remove(albumKey);
+    setState(() => _pinnedAlbumKeys = next);
+    await widget.library.database.setSetting(
+      'pinned_album_keys',
+      next.join('\n'),
+    );
   }
 
   Future<void> _loadEqualizerSettings() async {
@@ -1387,7 +1430,34 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   ),
                 ),
               ),
-              if (_section == LibrarySection.albums)
+              if (_section == LibrarySection.albums) ...[
+                PopupMenuButton<String>(
+                  tooltip: 'Sort albums',
+                  icon: const Icon(Icons.sort_rounded, color: BitwaveColors.muted),
+                  onSelected: _setAlbumSort,
+                  itemBuilder: (_) => [
+                    CheckedPopupMenuItem(
+                      value: 'title_asc',
+                      checked: _albumSort == 'title_asc',
+                      child: const Text('Title · A–Z'),
+                    ),
+                    CheckedPopupMenuItem(
+                      value: 'title_desc',
+                      checked: _albumSort == 'title_desc',
+                      child: const Text('Title · Z–A'),
+                    ),
+                    CheckedPopupMenuItem(
+                      value: 'year_asc',
+                      checked: _albumSort == 'year_asc',
+                      child: const Text('Year · Oldest first'),
+                    ),
+                    CheckedPopupMenuItem(
+                      value: 'year_desc',
+                      checked: _albumSort == 'year_desc',
+                      child: const Text('Year · Newest first'),
+                    ),
+                  ],
+                ),
                 IconButton(
                   tooltip: _grid ? 'Show list' : 'Show grid',
                   onPressed: () => setState(() => _grid = !_grid),
@@ -1396,6 +1466,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     color: BitwaveColors.muted,
                   ),
                 ),
+              ],
               if (_section == LibrarySection.playlists)
                 IconButton(
                   tooltip: _selectedPlaylistId == null
@@ -1410,22 +1481,26 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         : Icons.add_rounded,
                   ),
                 )
-              else
+              else if (_section != LibrarySection.playlists)
                 PopupMenuButton<String>(
                   tooltip: 'Sort library',
                   icon: const Icon(
                     Icons.sort_rounded,
                     color: BitwaveColors.muted,
                   ),
-                  onSelected: (_) => setState(
-                    () => _tracks.sort(
-                      (a, b) => a.title.toLowerCase().compareTo(
-                        b.title.toLowerCase(),
-                      ),
-                    ),
-                  ),
+                  onSelected: (value) {
+                    setState(() {
+                      switch (value) {
+                        case 'title_asc':
+                          _tracks.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+                        case 'title_desc':
+                          _tracks.sort((a, b) => b.title.toLowerCase().compareTo(a.title.toLowerCase()));
+                      }
+                    });
+                  },
                   itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'title', child: Text('Title A–Z')),
+                    PopupMenuItem(value: 'title_asc', child: Text('Title A–Z')),
+                    PopupMenuItem(value: 'title_desc', child: Text('Title Z–A')),
                   ],
                 ),
             ],
@@ -1961,20 +2036,57 @@ class _LibraryScreenState extends State<LibraryScreen> {
     for (final track in tracks) {
       albums.putIfAbsent(_albumKey(track), () => []).add(track);
     }
-    final entries = albums.entries.toList()
-      ..sort((a, b) => a.key.toLowerCase().compareTo(b.key.toLowerCase()));
+    final entries = albums.entries.toList();
+    int compareAlbums(MapEntry<String, List<Track>> a, MapEntry<String, List<Track>> b) {
+      final aTrack = a.value.first;
+      final bTrack = b.value.first;
+      final pinnedCompare = (_pinnedAlbumKeys.contains(b.key) ? 1 : 0)
+          .compareTo(_pinnedAlbumKeys.contains(a.key) ? 1 : 0);
+      if (pinnedCompare != 0) return pinnedCompare;
+      switch (_albumSort) {
+        case 'title_desc':
+          return bTrack.displayAlbum.toLowerCase().compareTo(aTrack.displayAlbum.toLowerCase());
+        case 'year_asc':
+          final aYear = a.value.map((track) => track.year).whereType<int>().fold<int?>(null, (best, year) => best == null || year < best ? year : best);
+          final bYear = b.value.map((track) => track.year).whereType<int>().fold<int?>(null, (best, year) => best == null || year < best ? year : best);
+          if (aYear == null && bYear != null) return 1;
+          if (aYear != null && bYear == null) return -1;
+          final byYear = (aYear ?? 0).compareTo(bYear ?? 0);
+          return byYear != 0 ? byYear : aTrack.displayAlbum.toLowerCase().compareTo(bTrack.displayAlbum.toLowerCase());
+        case 'year_desc':
+          final aYear = a.value.map((track) => track.year).whereType<int>().fold<int?>(null, (best, year) => best == null || year > best ? year : best);
+          final bYear = b.value.map((track) => track.year).whereType<int>().fold<int?>(null, (best, year) => best == null || year > best ? year : best);
+          if (aYear == null && bYear != null) return 1;
+          if (aYear != null && bYear == null) return -1;
+          final byYear = (bYear ?? 0).compareTo(aYear ?? 0);
+          return byYear != 0 ? byYear : aTrack.displayAlbum.toLowerCase().compareTo(bTrack.displayAlbum.toLowerCase());
+        case 'title_asc':
+        default:
+          return aTrack.displayAlbum.toLowerCase().compareTo(bTrack.displayAlbum.toLowerCase());
+      }
+    }
+    entries.sort(compareAlbums);
     if (!_grid) {
       return ListView.builder(
         itemCount: entries.length,
         itemBuilder: (_, i) {
           final e = entries[i];
           final t = e.value.first;
+          final pinned = _pinnedAlbumKeys.contains(e.key);
           return ListTile(
             leading: _artwork(t, 52),
             title: Text(t.displayAlbum),
             subtitle: Text(
-              '${_albumArtistLabel(e.value)}  ·  ${e.value.length} tracks',
+              '${_albumArtistLabel(e.value)}  ·  ${e.value.length} tracks${t.year == null ? '' : '  ·  ${t.year}'}',
               style: const TextStyle(color: BitwaveColors.muted, fontSize: 12),
+            ),
+            trailing: IconButton(
+              tooltip: pinned ? 'Unpin album' : 'Pin album to top',
+              icon: Icon(
+                pinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                color: pinned ? BitwaveColors.accent : BitwaveColors.muted,
+              ),
+              onPressed: () => _toggleAlbumPinned(e.key),
             ),
             onTap: () => _openAlbum(e.value),
           );
@@ -1993,12 +2105,39 @@ class _LibraryScreenState extends State<LibraryScreen> {
       itemBuilder: (_, i) {
         final e = entries[i];
         final t = e.value.first;
+        final pinned = _pinnedAlbumKeys.contains(e.key);
         return InkWell(
           onTap: () => _openAlbum(e.value),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(child: Center(child: _artwork(t, 158, radius: 7))),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: Center(child: _artwork(t, 158, radius: 7))),
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: Material(
+                        color: const Color(0xAA090A0B),
+                        borderRadius: BorderRadius.circular(20),
+                        child: IconButton(
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+                          padding: EdgeInsets.zero,
+                          tooltip: pinned ? 'Unpin album' : 'Pin album to top',
+                          onPressed: () => _toggleAlbumPinned(e.key),
+                          icon: Icon(
+                            pinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                            size: 17,
+                            color: pinned ? BitwaveColors.accent : Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 9),
               Text(
                 t.displayAlbum,
@@ -2008,13 +2147,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
               ),
               const SizedBox(height: 2),
               Text(
-                _albumArtistLabel(e.value),
+                '${_albumArtistLabel(e.value)}${t.year == null ? '' : ' · ${t.year}'}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: BitwaveColors.muted,
-                  fontSize: 12,
-                ),
+                style: const TextStyle(color: BitwaveColors.muted, fontSize: 12),
               ),
             ],
           ),
