@@ -154,10 +154,13 @@ class _EqualizerPageState extends State<EqualizerPage> {
               divisions: 24,
               onChanged: widget.equalizer.enabled
                   ? (value) {
-                      setState(() {
-                        _bands[index] = value;
+                      setState(() => _bands[index] = value);
+                      widget.equalizer.setBands(_bands).then((_) {
+                        widget.onChanged();
+                        if (mounted) setState(() {});
+                      }).catchError((Object _) {
+                        if (mounted) setState(() {});
                       });
-                      widget.equalizer.setBands(_bands);
                     }
                   : null,
             ),
