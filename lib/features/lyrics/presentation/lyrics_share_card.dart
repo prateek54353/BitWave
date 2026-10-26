@@ -12,6 +12,36 @@ enum CardAspectRatio { square, portrait }
 
 enum CardBackground { gradient, dark, warm }
 
+/// Keeps the card compact for short selections while adding vertical space
+/// when selected lyrics need more room. Long lines count as multiple visual
+/// lines so wrapped lyrics are less likely to be clipped.
+double _cardHeightFor(
+  List<String> lines,
+  CardAspectRatio aspectRatio,
+) {
+  final width = aspectRatio == CardAspectRatio.square ? 420.0 : 360.0;
+  final fontSize = lines.length >= 4
+      ? 23.0
+      : lines.length == 3
+          ? 27.0
+          : aspectRatio == CardAspectRatio.square
+              ? 31.0
+              : 34.0;
+  final horizontalPadding = aspectRatio == CardAspectRatio.square ? 56.0 : 60.0;
+  final usableWidth = width - horizontalPadding;
+  final approximateCharactersPerLine = (usableWidth / (fontSize * 0.52))
+      .floor()
+      .clamp(10, 40);
+  final visualLineCount = lines.fold<int>(
+    0,
+    (total, line) => total + (line.length / approximateCharactersPerLine).ceil().clamp(1, 20),
+  );
+  final baseHeight = aspectRatio == CardAspectRatio.square ? 420.0 : 640.0;
+  final baseVisualLines = 2;
+  final extraLines = (visualLineCount - baseVisualLines).clamp(0, 18);
+  return baseHeight + extraLines * (fontSize * 1.16 + 12);
+}
+
 /// A render-only card. The share action lives in the sheet so it is not
 /// accidentally included in the exported image.
 class LyricsShareCard extends StatelessWidget {
@@ -31,7 +61,7 @@ class LyricsShareCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final width = aspectRatio == CardAspectRatio.square ? 420.0 : 360.0;
-    final height = aspectRatio == CardAspectRatio.square ? 420.0 : 640.0;
+    final height = _cardHeightFor(selectedLines, aspectRatio);
 
     return RepaintBoundary(
       child: SizedBox(
@@ -321,7 +351,10 @@ class _LyricsShareCardSheetState extends State<LyricsShareCardSheet> {
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.sizeOf(context).height;
     final cardWidth = _aspectRatio == CardAspectRatio.square ? 420.0 : 360.0;
-    final cardHeight = _aspectRatio == CardAspectRatio.square ? 420.0 : 640.0;
+    final previewLines = _selectedText.isEmpty
+        ? const ['Select a lyric below']
+        : _selectedText;
+    final cardHeight = _cardHeightFor(previewLines, _aspectRatio);
 
     return SafeArea(
       top: false,
@@ -400,9 +433,7 @@ class _LyricsShareCardSheetState extends State<LyricsShareCardSheet> {
                         scale: scale,
                         child: LyricsShareCard(
                           track: widget.track,
-                          selectedLines: _selectedText.isEmpty
-                              ? const ['Select a lyric below']
-                              : _selectedText,
+                          selectedLines: previewLines,
                           aspectRatio: _aspectRatio,
                           background: _background,
                         ),
