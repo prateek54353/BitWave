@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../app/theme/bitwave_theme.dart';
+import '../../library/domain/track.dart';
+import 'lyrics_share_card.dart';
 import '../domain/lrc_document.dart';
 
 /// Compact, wrapping lyric preview with a full scrollable, tap-to-seek view.
@@ -10,12 +12,16 @@ class WordSyncedLyrics extends StatefulWidget {
     required this.lyrics,
     required this.positionStream,
     required this.onSeek,
+    required this.track,
+    this.lyricsSharingEnabled = false,
     this.height = 76,
   });
 
   final String lyrics;
   final Stream<Duration> positionStream;
   final ValueChanged<Duration> onSeek;
+  final Track track;
+  final bool lyricsSharingEnabled;
   final double height;
 
   @override
@@ -223,6 +229,9 @@ class _WordSyncedLyricsState extends State<WordSyncedLyrics> {
         onSeek: (value) {
           widget.onSeek(value);
         },
+        track: widget.track,
+        lyricsSharingEnabled: widget.lyricsSharingEnabled,
+        lyrics: widget.lyrics,
       ),
     );
   }
@@ -235,6 +244,9 @@ class _LyricsSheet extends StatefulWidget {
     required this.positionStream,
     required this.initialPosition,
     required this.onSeek,
+    required this.track,
+    required this.lyricsSharingEnabled,
+    required this.lyrics,
   });
 
   final LrcDocument document;
@@ -242,6 +254,9 @@ class _LyricsSheet extends StatefulWidget {
   final Stream<Duration> positionStream;
   final Duration initialPosition;
   final ValueChanged<Duration> onSeek;
+  final Track track;
+  final bool lyricsSharingEnabled;
+  final String lyrics;
 
   @override
   State<_LyricsSheet> createState() => _LyricsSheetState();
@@ -310,6 +325,23 @@ class _LyricsSheetState extends State<_LyricsSheet> {
                     ],
                   ),
                 ),
+                if (widget.lyricsSharingEnabled)
+                  IconButton(
+                    tooltip: 'Share lyrics',
+                    onPressed: () => showModalBottomSheet<void>(
+                      context: context,
+                      isScrollControlled: true,
+                      useSafeArea: true,
+                      backgroundColor: Colors.transparent,
+                      builder: (_) => LyricsShareCardSheet(
+                        track: widget.track,
+                        lyrics: widget.lyrics,
+                        lyricsSource: 'Local library',
+                      ),
+                    ),
+                    icon: const Icon(Icons.ios_share_rounded,
+                        color: BitwaveColors.paper),
+                  ),
                 if (hasSyncedLyrics)
                   const Row(
                     children: [
