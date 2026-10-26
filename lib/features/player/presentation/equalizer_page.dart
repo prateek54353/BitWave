@@ -36,8 +36,16 @@ class _EqualizerPageState extends State<EqualizerPage> {
           Switch(
             value: widget.equalizer.enabled,
             onChanged: (value) async {
-              await widget.equalizer.setEnabled(value);
-              widget.onChanged();
+              try {
+                await widget.equalizer.setEnabled(value);
+                widget.onChanged();
+              } catch (_) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(widget.equalizer.lastError ?? 'Equalizer unavailable')),
+                  );
+                }
+              }
               if (mounted) setState(() {});
             },
           ),
@@ -52,10 +60,16 @@ class _EqualizerPageState extends State<EqualizerPage> {
           ),
           const SizedBox(height: 8),
           Text(
-            widget.equalizer.enabled
-                ? 'Equalizer is enabled'
-                : 'Equalizer is disabled',
-            style: const TextStyle(color: BitwaveColors.muted, fontSize: 14),
+            widget.equalizer.lastError ??
+                (widget.equalizer.enabled
+                    ? 'Equalizer is enabled'
+                    : 'Equalizer is disabled'),
+            style: TextStyle(
+              color: widget.equalizer.lastError == null
+                  ? BitwaveColors.muted
+                  : Colors.orangeAccent,
+              fontSize: 14,
+            ),
           ),
           const SizedBox(height: 24),
           const Text(
@@ -155,15 +169,31 @@ class _EqualizerPageState extends State<EqualizerPage> {
 
   Future<void> _applyPreset(List<double> values) async {
     _bands = List.from(values);
-    await widget.equalizer.setBands(_bands);
-    widget.onChanged();
+    try {
+      await widget.equalizer.setBands(_bands);
+      widget.onChanged();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(widget.equalizer.lastError ?? 'Could not apply preset')),
+        );
+      }
+    }
     if (mounted) setState(() {});
   }
 
   Future<void> _reset() async {
     _bands = List.filled(10, 0.0);
-    await widget.equalizer.setBands(_bands);
-    widget.onChanged();
+    try {
+      await widget.equalizer.setBands(_bands);
+      widget.onChanged();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(widget.equalizer.lastError ?? 'Could not reset equalizer')),
+        );
+      }
+    }
     if (mounted) setState(() {});
   }
 }
