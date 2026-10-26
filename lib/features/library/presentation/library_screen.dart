@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
@@ -86,6 +87,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Set<String> _folderKeys = const {};
   Map<String, Track> _tracksById = const {};
   bool _lyricsSharingEnabled = false;
+  String _albumSort = 'title_asc';
+  Set<String> _pinnedAlbumKeys = <String>{};
 
   @override
   void initState() {
@@ -95,11 +98,37 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _startIOSFolderMonitoring();
     _loadLyricsSharingSetting();
     _loadEqualizerSettings();
+    _loadAlbumPreferences();
   }
 
   Future<void> _loadLyricsSharingSetting() async {
     final enabled = await widget.library.database.getLyricsSharingEnabled();
     if (mounted) setState(() => _lyricsSharingEnabled = enabled);
+  }
+
+
+  Future<void> _loadAlbumPreferences() async {
+    final sort = await widget.library.database.getSetting('album_sort');
+    final pinnedJson = await widget.library.database.getSetting('pinned_album_keys');
+    Set<String> pinned = <String>{};
+    if (pinnedJson != null) {
+      try { pinned = (jsonDecode(pinnedJson) as List).whereType<String>().toSet(); } catch (_) { pinned = <String>{}; }
+    }
+    if (!mounted) return;
+    setState(() {
+      if (const {'title_asc', 'title_desc', 'year_asc', 'year_desc'}.contains(sort)) _albumSort = sort!;
+      _pinnedAlbumKeys = pinned;
+    });
+  }
+
+  Future<void> _setAlbumSort(String value) async {
+    setState(() => _albumSort = value);
+    await widget.library.database.setSetting('album_sort', value);
+  }
+
+  Future<void> _toggleAlbumPin(String key) async {
+    setState(() { if (!_pinnedAlbumKeys.add(key)) _pinnedAlbumKeys.remove(key); });
+    await widget.library.database.setSetting('pinned_album_keys', jsonEncode(_pinnedAlbumKeys.toList()..sort()));
   }
 
   Future<void> _loadEqualizerSettings() async {
@@ -1396,6 +1425,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     color: BitwaveColors.muted,
                   ),
                 ),
+
+              if (_section == LibrarySection.albums)
+                PopupMenuButton<String>(
+                  tooltip: 'Sort albums',
+                  initialValue: _albumSort,
+                  icon: const Icon(Icons.sort_rounded, color: BitwaveColors.muted),
+                  onSelected: (value) => unawaited(_setAlbumSort(value)),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'title_asc', child: Text('Title A–Z')),
+                    PopupMenuItem(value: 'title_desc', child: Text('Title Z–A')),
+                    PopupMenuItem(value: 'year_asc', child: Text('Year ascending')),
+                    PopupMenuItem(value: 'year_desc', child: Text('Year descending')),
+                  ],
+                ),
               if (_section == LibrarySection.playlists)
                 IconButton(
                   tooltip: _selectedPlaylistId == null
@@ -1962,19 +2005,48 @@ class _LibraryScreenState extends State<LibraryScreen> {
       albums.putIfAbsent(_albumKey(track), () => []).add(track);
     }
     final entries = albums.entries.toList()
-      ..sort((a, b) => a.key.toLowerCase().compareTo(b.key.toLowerCase()));
+      ..sort((a, b) {
+        final aPinned = _pinnedAlbumKeys.contains(a.key);
+        final bPinned = _pinnedAlbumKeys.contains(b.key);
+        if (aPinned != bPinned) return aPinned ? -1 : 1;
+        final aTrack = a.value.first;
+        final bTrack = b.value.first;
+        int result;
+        if (_albumSort.startsWith('year')) {
+          final ay = a.value.map((t) => t.year).whereType<int>().toList();
+          final by = b.value.map((t) => t.year).whereType<int>().toList();
+          final aYear = ay.isEmpty ? null : ay.reduce((x, y) => x > y ? x : y);
+          final bYear = by.isEmpty ? null : by.reduce((x, y) => x > y ? x : y);
+          if (aYear == null && bYear != null) return 1;
+          if (bYear == null && aYear != null) return -1;
+          result = (aYear ?? 0).compareTo(bYear ?? 0);
+          if (_albumSort == 'year_desc') result = -result;
+        } else {
+          result = aTrack.displayAlbum.toLowerCase().compareTo(bTrack.displayAlbum.toLowerCase());
+          if (_albumSort == 'title_desc') result = -result;
+        }
+        if (result != 0) return result;
+        return aTrack.displayArtist.toLowerCase().compareTo(bTrack.displayArtist.toLowerCase());
+      });
     if (!_grid) {
       return ListView.builder(
         itemCount: entries.length,
         itemBuilder: (_, i) {
           final e = entries[i];
           final t = e.value.first;
+          final pinned = _pinnedAlbumKeys.contains(e.key);
           return ListTile(
             leading: _artwork(t, 52),
             title: Text(t.displayAlbum),
             subtitle: Text(
-              '${_albumArtistLabel(e.value)}  ·  ${e.value.length} tracks',
+              '${_albumArtistLabel(e.value)}  ·  ${e.value.length} tracks${t.year == null ? '' : '  ·  ${t.year}'}',
               style: const TextStyle(color: BitwaveColors.muted, fontSize: 12),
+            ),
+            trailing: PopupMenuButton<String>(
+              tooltip: 'Album options',
+              onSelected: (value) { if (value == 'pin') unawaited(_toggleAlbumPin(e.key)); },
+              itemBuilder: (_) => [PopupMenuItem(value: 'pin', child: Text(pinned ? 'Unpin album' : 'Pin album to top'))],
+              icon: Icon(pinned ? Icons.push_pin_rounded : Icons.more_vert_rounded),
             ),
             onTap: () => _openAlbum(e.value),
           );
@@ -1993,12 +2065,32 @@ class _LibraryScreenState extends State<LibraryScreen> {
       itemBuilder: (_, i) {
         final e = entries[i];
         final t = e.value.first;
+        final pinned = _pinnedAlbumKeys.contains(e.key);
         return InkWell(
           onTap: () => _openAlbum(e.value),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(child: Center(child: _artwork(t, 158, radius: 7))),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Center(child: _artwork(t, 158, radius: 7)),
+                    Positioned(
+                      top: 4, right: 4,
+                      child: Material(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        shape: const CircleBorder(),
+                        child: PopupMenuButton<String>(
+                          tooltip: 'Album options',
+                          icon: Icon(pinned ? Icons.push_pin_rounded : Icons.more_horiz_rounded, color: Colors.white, size: 20),
+                          onSelected: (value) { if (value == 'pin') unawaited(_toggleAlbumPin(e.key)); },
+                          itemBuilder: (_) => [PopupMenuItem(value: 'pin', child: Text(pinned ? 'Unpin album' : 'Pin album to top'))],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 9),
               Text(
                 t.displayAlbum,
