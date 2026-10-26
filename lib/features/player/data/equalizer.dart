@@ -9,12 +9,22 @@ class Equalizer {
   bool get enabled => _enabled;
   List<double> get bands => List.unmodifiable(_bands);
 
+  String? _lastError;
+  String? get lastError => _lastError;
+
   Future<void> setEnabled(bool value) async {
-    _enabled = value;
     try {
       await _channel.invokeMethod('setEnabled', {'enabled': value});
-    } catch (e) {
-      // Gracefully degrade if platform channel not available
+      _enabled = value;
+      _lastError = null;
+    } on PlatformException catch (e) {
+      _lastError = e.message ?? 'Equalizer is not available on this platform.';
+      _enabled = false;
+      rethrow;
+    } on MissingPluginException {
+      _lastError = 'Equalizer is not available on this platform.';
+      _enabled = false;
+      rethrow;
     }
   }
 
@@ -23,8 +33,13 @@ class Equalizer {
     _bands = List.from(bands);
     try {
       await _channel.invokeMethod('setBands', {'bands': bands});
-    } catch (e) {
-      // Gracefully degrade if platform channel not available
+      _lastError = null;
+    } on PlatformException catch (e) {
+      _lastError = e.message ?? 'Could not apply equalizer settings.';
+      rethrow;
+    } on MissingPluginException {
+      _lastError = 'Equalizer is not available on this platform.';
+      rethrow;
     }
   }
 
@@ -38,8 +53,10 @@ class Equalizer {
           _bands = bandValues.map((e) => (e as num).toDouble()).toList();
         }
       }
-    } catch (e) {
-      // Use defaults if platform channel not available
+    } on PlatformException catch (e) {
+      _lastError = e.message ?? 'Equalizer is not available on this platform.';
+    } on MissingPluginException {
+      _lastError = 'Equalizer is not available on this platform.';
     }
   }
 
