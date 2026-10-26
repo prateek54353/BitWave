@@ -34,11 +34,11 @@ double _cardHeightFor(
       .clamp(10, 40);
   final visualLineCount = lines.fold<int>(
     0,
-    (total, line) => total + (line.length / approximateCharactersPerLine).ceil().clamp(1, 20),
+    (total, line) => total + (line.length / approximateCharactersPerLine).ceil().clamp(1, 20).toInt(),
   );
   final baseHeight = aspectRatio == CardAspectRatio.square ? 420.0 : 640.0;
   final baseVisualLines = 2;
-  final extraLines = (visualLineCount - baseVisualLines).clamp(0, 18);
+  final extraLines = (visualLineCount - baseVisualLines).clamp(0, 18).toInt();
   return baseHeight + extraLines * (fontSize * 1.16 + 12);
 }
 
