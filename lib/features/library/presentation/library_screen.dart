@@ -2038,36 +2038,44 @@ class _LibraryScreenState extends State<LibraryScreen> {
     for (final track in tracks) {
       albums.putIfAbsent(_albumKey(track), () => []).add(track);
     }
-    final entries = albums.entries.toList();
-    int compareAlbums(MapEntry<String, List<Track>> a, MapEntry<String, List<Track>> b) {
-      final aTrack = a.value.first;
-      final bTrack = b.value.first;
-      final pinnedCompare = (_pinnedAlbumKeys.contains(b.key) ? 1 : 0)
-          .compareTo(_pinnedAlbumKeys.contains(a.key) ? 1 : 0);
-      if (pinnedCompare != 0) return pinnedCompare;
-      switch (_albumSort) {
-        case 'title_desc':
-          return bTrack.displayAlbum.toLowerCase().compareTo(aTrack.displayAlbum.toLowerCase());
-        case 'year_asc':
-          final aYear = a.value.map((track) => track.year).whereType<int>().fold<int?>(null, (best, year) => best == null || year < best ? year : best);
-          final bYear = b.value.map((track) => track.year).whereType<int>().fold<int?>(null, (best, year) => best == null || year < best ? year : best);
-          if (aYear == null && bYear != null) return 1;
-          if (aYear != null && bYear == null) return -1;
-          final byYear = (aYear ?? 0).compareTo(bYear ?? 0);
-          return byYear != 0 ? byYear : aTrack.displayAlbum.toLowerCase().compareTo(bTrack.displayAlbum.toLowerCase());
-        case 'year_desc':
-          final aYear = a.value.map((track) => track.year).whereType<int>().fold<int?>(null, (best, year) => best == null || year > best ? year : best);
-          final bYear = b.value.map((track) => track.year).whereType<int>().fold<int?>(null, (best, year) => best == null || year > best ? year : best);
-          if (aYear == null && bYear != null) return 1;
-          if (aYear != null && bYear == null) return -1;
-          final byYear = (bYear ?? 0).compareTo(aYear ?? 0);
-          return byYear != 0 ? byYear : aTrack.displayAlbum.toLowerCase().compareTo(bTrack.displayAlbum.toLowerCase());
-        case 'title_asc':
-        default:
-          return aTrack.displayAlbum.toLowerCase().compareTo(bTrack.displayAlbum.toLowerCase());
-      }
+
+    int? albumYear(List<Track> albumTracks) {
+      final years = albumTracks.map((track) => track.year).whereType<int>();
+      return years.isEmpty ? null : years.reduce((a, b) => a < b ? a : b);
     }
-    entries.sort(compareAlbums);
+
+    final entries = albums.entries.toList()
+      ..sort((a, b) {
+        final aPinned = _pinnedAlbumKeys.contains(a.key);
+        final bPinned = _pinnedAlbumKeys.contains(b.key);
+        if (aPinned != bPinned) return aPinned ? -1 : 1;
+
+        final aTrack = a.value.first;
+        final bTrack = b.value.first;
+        final aTitle = aTrack.displayAlbum.toLowerCase();
+        final bTitle = bTrack.displayAlbum.toLowerCase();
+
+        switch (_albumSort) {
+          case 'title_desc':
+            return bTitle.compareTo(aTitle);
+          case 'year_asc':
+          case 'year_desc':
+            final aYear = albumYear(a.value);
+            final bYear = albumYear(b.value);
+            if (aYear == null && bYear != null) return 1;
+            if (aYear != null && bYear == null) return -1;
+            if (aYear != null && bYear != null) {
+              final byYear = _albumSort == 'year_asc'
+                  ? aYear.compareTo(bYear)
+                  : bYear.compareTo(aYear);
+              if (byYear != 0) return byYear;
+            }
+            return aTitle.compareTo(bTitle);
+          case 'title_asc':
+          default:
+            return aTitle.compareTo(bTitle);
+        }
+      });
     if (!_grid) {
       return ListView.builder(
         itemCount: entries.length,
