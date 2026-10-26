@@ -10,7 +10,7 @@ Bitwave is an offline-first local audio library and player built with Flutter.
 - Read embedded unsynchronized and timestamped LRC lyrics into the library. Timestamped lyrics follow playback in Now Playing; ordinary lyrics show a short excerpt.
 - Search LRCLIB from track details, review exact metadata matches, and save selected lyrics in the local library for offline use. Requests identify Bitwave and honor LRCLIB's `Retry-After` response.
 - Keep track metadata and favorites in a versioned SQLite database.
-- Browse songs, albums, artists, and genres; search the indexed library; switch album presentation between grid and list.
+- Browse songs, albums, artists, and genres; search the indexed library; sort albums by title in either direction or by release year in either direction; pin albums to the top; switch album presentation between grid and list.
 - Play local files through `just_audio`, with an `audio_service` queue, seek, previous/next, shuffle, repeat, mini-player, full player, and Android/iOS media-session configuration.
 - Configure a sleep timer that pauses active playback.
 - Assign per-track or album-level image and motion artwork as private Bitwave overrides. Crop framing and aspect ratio are persisted without writing to audio tags.
@@ -42,4 +42,4 @@ See [docs/artwork-system.md](docs/artwork-system.md) for artwork storage and pro
 
 ## Not yet available
 
-The equalizer is not active because the selected backend does not provide a shared, cross-platform ten-band DSP. Crossfade, ReplayGain, unrestricted media scanning, network sources, embedded-file tag writing, playlist editing, and backup are not implemented. Tag and lyric edits currently apply to Bitwave's local library index. No sample tracks or counts are bundled. Store listing, privacy disclosures, production signing, iOS build/sign/device validation, lyrics-content rights review, and final supported-device playback checks remain release work.
+The ten-band equalizer is currently unavailable because the selected playback backend does not expose a shared, cross-platform audio DSP graph. The UI now reports this explicitly rather than claiming that an unattached effect is active. Crossfade, ReplayGain, unrestricted media scanning, network sources, embedded-file tag writing, playlist editing, and backup are not implemented. Tag and lyric edits currently apply to Bitwave's local library index. No sample tracks or counts are bundled. Store listing, privacy disclosures, production signing, iOS build/sign/device validation, lyrics-content rights review, and final supported-device playback checks remain release work.
